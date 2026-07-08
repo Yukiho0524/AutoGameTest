@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+data/jobs/
+data/logs/
+config/local.json
+*.tmp
+shot_test.png

@@ -1,0 +1,30 @@
+{
+  "games": [
+    {
+      "id": "gget",
+      "name": "SD Gundam G Generation Eternal",
+      "platform": "android",
+      "control": "emulator",
+      "launch": {
+        "package": "com.bandainamcoent.gget_WW",
+        "emulator": "ldplayer",
+        "instance": 0,
+        "serial": "emulator-5554"
+      },
+      "skill_path": ".claude/skills/gget/SKILL.md",
+      "agent_path": ".claude/agents/gget-player.md",
+      "learn_sources": [],
+      "verified": false,
+      "created": "2026-07-08"
+    }
+  ],
+  "agents": [
+    {
+      "game_id": "gget",
+      "name": "通過鋼彈特殊關卡",
+      "prompt": "1.進到遊戲中\n2.今天有個鋼彈之日的活動\n3.進到編制，用一鍵編隊，進入關卡\n4.關卡中使用自動戰鬥，通過關卡到領獎畫面結束",
+      "id": "gget-game",
+      "created": "2026-07-08"
+    }
+  ]
+}

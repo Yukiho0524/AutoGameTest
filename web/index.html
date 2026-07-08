@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AutoGameTest 控制台</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>🎮 AutoGameTest 控制台</h1>
+    <p class="sub">AI 遊戲代打系統 — 遊戲庫、模擬器即時操控、Agent 管理</p>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="library">遊戲庫</button>
+    <button class="tab" data-tab="control">模擬器操控</button>
+    <button class="tab" data-tab="agents">Agent</button>
+    <button class="tab" data-tab="jobs">任務佇列</button>
+  </nav>
+
+  <!-- ===== 遊戲庫 ===== -->
+  <section id="library" class="panel active">
+    <div class="row-split">
+      <div class="col">
+        <h2>遊戲清單</h2>
+        <div id="game-list" class="cards"></div>
+      </div>
+      <div class="col">
+        <h2 id="form-title">新增遊戲</h2>
+        <form id="game-form">
+          <input type="hidden" name="id">
+          <label>遊戲名稱
+            <input name="name" required placeholder="例：遊戲王 Master Duel">
+          </label>
+
+          <label>主程式路徑 / exe
+            <div class="inline">
+              <input name="exe_path" placeholder="C:\...\game.exe（模擬器遊戲可留空）">
+              <button type="button" id="detect-btn">偵測平台</button>
+            </div>
+          </label>
+
+          <label>平台
+            <select name="platform" id="platform-sel">
+              <option value="steam">Steam</option>
+              <option value="epic">Epic Games</option>
+              <option value="xbox">Xbox / Microsoft Store</option>
+              <option value="pc">一般 PC 單機</option>
+              <option value="android">Android 模擬器</option>
+            </select>
+          </label>
+          <p class="hint" id="platform-hint"></p>
+
+          <!-- desktop fields -->
+          <div class="platform-fields" data-control="desktop">
+            <label id="appid-field" hidden>Steam AppID
+              <input name="steam_appid" placeholder="例：1449850">
+            </label>
+            <label id="epic-field" hidden>Epic AppName
+              <input name="epic_app_name">
+            </label>
+            <label id="aumid-field" hidden>Xbox AUMID（PackageFamilyName!AppId）
+              <input name="aumid">
+            </label>
+            <label>視窗標題
+              <input name="window_title" placeholder="用於 computer-use 定位視窗">
+            </label>
+            <label>computer-use 應用名稱
+              <input name="cu_app_name" placeholder="例：masterduel.exe（含副檔名）">
+            </label>
+          </div>
+
+          <!-- emulator fields -->
+          <div class="platform-fields" data-control="emulator" hidden>
+            <label>模擬器
+              <select name="emulator"><option value="ldplayer">雷電 LDPlayer</option></select>
+            </label>
+            <label>實例編號
+              <input name="instance" type="number" value="0" min="0">
+            </label>
+            <label>App 套件名（package）
+              <div class="inline">
+                <input name="package" placeholder="com.example.game">
+                <button type="button" id="pkg-btn">列出已安裝</button>
+              </div>
+            </label>
+            <datalist id="pkg-list"></datalist>
+          </div>
+
+          <div class="actions">
+            <button type="submit" class="primary">儲存遊戲</button>
+            <button type="button" id="form-reset">清空</button>
+          </div>
+        </form>
+
+        <div id="learn-box" class="learn" hidden>
+          <h3>學習（建立 Skill）</h3>
+          <p class="hint">貼上攻略 wiki / 介紹網頁網址（每行一個）。YouTube 影片請貼有字幕的連結。</p>
+          <textarea id="learn-sources" rows="3" placeholder="https://..."></textarea>
+          <button type="button" id="learn-btn">送出學習任務</button>
+          <p class="hint" id="learn-status"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 模擬器操控 ===== -->
+  <section id="control" class="panel">
+    <h2>模擬器即時操控</h2>
+    <div class="control-bar">
+      <label>裝置 <select id="serial-sel"></select></label>
+      <button id="refresh-shot">重新截圖</button>
+      <label><input type="checkbox" id="auto-refresh"> 自動更新 (2s)</label>
+      <span class="hint">點擊畫面 = 送出 tap 到模擬器（繞過實體滑鼠鍵盤）</span>
+    </div>
+    <div id="screen-wrap">
+      <img id="screen" alt="模擬器畫面" />
+      <p class="hint" id="screen-status">選擇裝置後按「重新截圖」</p>
+    </div>
+  </section>
+
+  <!-- ===== Agent ===== -->
+  <section id="agents" class="panel">
+    <div class="row-split">
+      <div class="col">
+        <h2>已儲存的 Agent</h2>
+        <div id="agent-list" class="cards"></div>
+      </div>
+      <div class="col">
+        <h2>新增 Agent</h2>
+        <form id="agent-form">
+          <input type="hidden" name="id">
+          <label>綁定遊戲
+            <select name="game_id" id="agent-game" required></select>
+          </label>
+          <label>Agent 名稱
+            <input name="name" required placeholder="例：每日簽到領獎">
+          </label>
+          <label>指令（Prompt）
+            <textarea name="prompt" rows="5" required
+              placeholder="你是一位遊戲玩家，請去遊戲中幫我達成…"></textarea>
+          </label>
+          <p class="hint">Agent 只能操作所綁定的遊戲。按「執行」立即在背景跑（Claude 優先，額度用完自動切 Codex），結果在任務佇列回報。</p>
+          <div class="actions">
+            <button type="submit" class="primary">儲存 Agent</button>
+            <button type="button" id="agent-reset">清空</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 任務佇列 ===== -->
+  <section id="jobs" class="panel">
+    <h2>任務佇列</h2>
+    <p class="hint">「執行 Agent」會立即在背景執行（先用 Claude，額度用完自動切 Codex），完成後這裡顯示狀態與使用的引擎。「學習」任務仍交由 Claude Code 在對話中處理（說「處理待辦任務」）。</p>
+    <div class="control-bar">
+      <button id="jobs-refresh">重新整理</button>
+      <button id="jobs-clear-finished">清除已完成</button>
+      <button id="jobs-clear-all" class="danger">全部清除</button>
+      <span class="hint">「全部清除」不會刪除執行中(running)的任務，避免中斷進行中的代打。</span>
+    </div>
+    <div id="job-list" class="cards"></div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

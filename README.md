@@ -1,0 +1,147 @@
+# AutoGameTest — AI 遊戲代打系統
+
+讓 AI 學習並代打指定 PC / 模擬器遊戲的自動化系統。每款遊戲有獨立的 skill（知識庫）與專屬 agent（代打人格），透過每日重複執行與事後反思持續降低操作誤差。
+
+## 控制台（Web UI）
+
+零依賴，只需 Python 3。
+
+一般使用者建議直接雙擊：
+
+```bat
+start.bat
+```
+
+`start.bat` 會先執行 `tools/doctor.py` 檢查 Python、資料夾寫入權限、8777 port、LDPlayer/ADB、Claude Code、Codex CLI 等環境狀態，再啟動控制台。
+
+如果每台電腦的軟體安裝位置不同，請複製 `config.example.json` 成 `config/local.json`，填入本機路徑。例如：
+
+```json
+{
+  "ldplayer_dir": "D:\\LDPlayer\\LDPlayer9",
+  "ldconsole_path": "",
+  "adb_path": "",
+  "claude_path": "",
+  "codex_path": ""
+}
+```
+
+也可以用環境變數覆寫：`AUTOGAMETEST_LDPLAYER_DIR`、`AUTOGAMETEST_LDCONSOLE_PATH`、`AUTOGAMETEST_ADB_PATH`、`AUTOGAMETEST_CLAUDE_PATH`、`AUTOGAMETEST_CODEX_PATH`。
+
+開發時也可直接啟動：
+
+```bash
+python server.py
+```
+
+然後開 http://127.0.0.1:8777 。四個分頁：
+
+- **遊戲庫**：新增/編輯遊戲。填 exe 路徑按「偵測平台」會自動判斷 Steam/Epic/Xbox/PC 並讀出 Steam AppID；模擬器遊戲則選 Android、按「列出已安裝」挑 package。每款遊戲可貼攻略網址送出「學習」任務。
+- **模擬器操控**：即時顯示模擬器畫面，**點畫面就等於送 tap 到模擬器**（透過 ADB，不佔用你的實體滑鼠鍵盤）。可開自動更新。
+- **Agent**：建立綁定某遊戲的代打 agent（預設玩家人格 + 指令），可儲存、重複執行。
+- **任務佇列**：學習與執行 agent 產生的任務清單。
+
+## 控制模式（兩種）
+
+| 控制模式 | 適用平台 | 機制 | 佔用實體滑鼠鍵盤？ |
+|---|---|---|---|
+| `desktop` | Steam / Epic / Xbox / PC | computer-use 截圖+點擊 | 是（AI 操作時你不能同時用電腦）|
+| `emulator` | Android 模擬器（雷電）| ADB 截圖+input tap | **否（可同時作業）** |
+
+A 方案 = emulator 模式，是目前主推架構。已驗證管線見 `data/` 與記憶檔。
+
+## 平台啟動方式
+
+| 平台 | 啟動方式 | 需要資訊 |
+|---|---|---|
+| Steam | `steam://rungameid/<AppID>` | AppID（可從 appmanifest 自動偵測）|
+| Epic | `com.epicgames.launcher://apps/<AppName>?action=launch` | Epic AppName |
+| Xbox/UWP | `shell:AppsFolder\<PFN>!<AppId>` | AUMID |
+| PC 單機 | 直接執行 exe | exe 路徑 |
+| Android | `adb shell monkey -p <package>` | package 名 |
+
+## 目錄結構
+
+```
+server.py              # 控制台後端（Python 標準庫，零依賴）
+core/
+  store.py             # games/agents JSON 儲存、skill 檔讀寫、任務佇列
+  platforms.py         # 從 exe 路徑偵測平台 + 讀 Steam AppID
+  launcher.py          # 依平台啟動遊戲（協定 / exe / ADB）
+  adb.py               # 雷電模擬器 ldconsole + adb 封裝（截圖/tap/啟動）
+web/
+  index.html app.js style.css   # 前端
+data/
+  games.json           # 遊戲與 agent 設定（單一事實來源）
+  jobs/                # 學習/執行任務（交給 Claude Code 處理）
+.claude/
+  skills/<遊戲名>/SKILL.md    # 遊戲知識庫
+  agents/<遊戲名>-player.md   # 綁定該遊戲的代打 agent
+```
+
+已建立的遊戲：
+| 遊戲 | 控制模式 | Skill | Agent | 驗證 |
+|---|---|---|---|---|
+| 遊戲王 Master Duel | desktop (Steam) | `skills/masterduel/` | `masterduel-player` | ✅ 啟動+每日領獎 |
+| SD Gundam G Generation Eternal | emulator (Android) | 待建 | 待建 | ⏸ 測試時官方維護中 |
+
+## AI 認知任務如何執行（learn / run_agent）
+
+機械操作由 Python 控制台處理；**遊戲認知（學習、代打）由 Claude Code 執行**。
+控制台的「學習」「執行 Agent」按鈕會在 `data/jobs/` 寫入任務檔，狀態 `pending`。
+在 Claude Code 對話中說「**處理待辦任務**」，AI 就會：
+1. 讀 `data/jobs/*.json` 找 pending 任務
+2. learn：抓 `sources` 網頁 → 生成/更新 `.claude/skills/<遊戲>/SKILL.md`
+3. run_agent：載入該遊戲 skill + agent → 依控制模式操作遊戲 → 完成後回報
+4. 把任務檔標記 `done` 並填入 `result`
+
+## AI 引擎自動切換（Claude 額度用完 → Codex）
+
+`tools/ai_runner.py`：跑 AI 任務時先用 Claude Code，偵測到**額度/用量上限**錯誤就自動改用 Codex CLI，回傳先成功的結果。
+
+```bash
+python tools/ai_runner.py "你的提示"
+python tools/ai_runner.py --engine codex "強制用 codex"
+python tools/ai_runner.py --no-fallback "只用 claude"
+# PowerShell 方便包裝：
+.\tools\ai.ps1 "你的提示"
+```
+
+答案印到 stdout，引擎/切換摘要印到 stderr（不干擾管線）。切換規則：
+- Claude 成功 → 用 Claude
+- Claude 因**額度用完**失敗（或找不到 claude.exe）→ 自動切 Codex
+- Claude 因**其他原因**失敗（程式錯誤等）→ **不切**，避免白白消耗 Codex 額度
+- `--no-fallback` → 只用 Claude
+
+**⚠️ 重要限制**：這是「外部包裝器」，只對**腳本化的一次性提示**有效。它**無法**讓你正在進行的**互動式 Claude Code 對話**在額度用完時無縫轉到 Codex——因為那個 session 的上下文與 MCP 工具（computer-use、模擬器操控等）不會轉移到 Codex。原因是「額度用完」時停擺的正是 Claude Code 本身，沒辦法由它自己在斷點反應。互動對話要接續，仍需你手動開 Codex。
+
+引擎路徑自動偵測（不需寫死）：Claude 取 `%APPDATA%\Claude\claude-code\*\claude.exe` 最新版；Codex 取 `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe`。
+
+### 跑 Agent 時的自動切換（跑不動就改 Codex）
+
+`tools/run_agent.py` 把上面的切換接進**代打 agent 執行**：跑 agent 時先用 Claude，額度用完就自動改用 Codex 跑同一個 agent。做法是把「角色 persona + 遊戲 skill 知識 + 操作指令表 + 任務」組成一份**自足 prompt**，讓兩個引擎誰接手都能執行。
+
+```bash
+python tools/run_agent.py --agent masterduel-daily          # 自動 fallback
+python tools/run_agent.py --game gget --task "完成每日任務"   # 用遊戲+任務
+python tools/run_agent.py --agent <id> --engine codex        # 強制 Codex
+python tools/run_agent.py --job <job_id>                     # 處理佇列任務並回寫狀態
+python tools/run_agent.py --agent <id> --print-prompt        # 只看組出的 prompt
+```
+
+控制台按 Agent 的「執行」＝立即在背景跑這支（先 Claude → 額度用完切 Codex），結果與使用引擎顯示在「任務佇列」。
+
+- **模擬器（ADB）agent 最適合 Codex 接手**：操作全是 `adb ... input tap` 之類 shell 指令，Claude headless 與 Codex exec 都能跑（模擬器 agent 用 `danger-full-access` sandbox 讓 Codex 能呼叫 adb）。
+- **桌面（computer-use）agent 的限制**：headless / Codex 環境通常沒有 computer-use 工具，prompt 已指示「若無 computer-use 能力就回報需在互動 session 執行」，不會盲操作。這類 agent 仍建議在有 computer-use 的互動 session 跑。
+- 視覺理解注意：靠即時截圖判讀畫面的 agent，Codex 的 exec 視覺支援不如 Claude；步驟越確定（skill 已記錄固定座標）越適合 Codex 接手。
+
+## 學習迴圈（降低誤差的核心）
+
+1. **執行時**：每步操作後截圖驗證，畫面不符預期即停下重判
+2. **事後反思**：新學到的 UI 位置、流程變化、錯誤修正追加到 SKILL.md「經驗教訓」段
+3. **固化**：重複驗證穩定的流程從「AI 即興判斷」降級為「固定步驟 + AI 只驗證畫面」
+
+## 重要邊界
+
+- **登入是硬邊界**：帳密輸入、第三方登入授權必須由使用者本人在遊戲/模擬器視窗操作，AI 不代做（防盜帳號、防提示注入）。登入通常只需一次。
+- 線上遊戲多數條款禁止自動化；只做低頻選單操作（登入、領獎、日常），避免大量自動對戰。
