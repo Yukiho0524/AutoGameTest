@@ -12,6 +12,7 @@ from datetime import date
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_FILE = os.path.join(ROOT, "data", "games.json")
 JOBS_DIR = os.path.join(ROOT, "data", "jobs")
+SCHEDULES_FILE = os.path.join(ROOT, "data", "schedules.json")
 SKILLS_DIR = os.path.join(ROOT, ".claude", "skills")
 AGENTS_DIR = os.path.join(ROOT, ".claude", "agents")
 
@@ -230,3 +231,62 @@ def update_job(job_id: str, **fields) -> dict | None:
 
 def get_agent(agent_id: str) -> dict | None:
     return next((a for a in _load()["agents"] if a["id"] == agent_id), None)
+
+
+# ---------------- schedules ----------------
+
+def list_schedules() -> list[dict]:
+    if not os.path.isfile(SCHEDULES_FILE):
+        return []
+    try:
+        with open(SCHEDULES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    schedules = data.get("schedules", data if isinstance(data, list) else [])
+    return schedules if isinstance(schedules, list) else []
+
+
+def save_schedules(schedules: list[dict]) -> list[dict]:
+    clean = []
+    for s in schedules:
+        try:
+            day = int(s.get("day"))
+            hour = int(s.get("hour"))
+            minute = int(s.get("minute", 0))
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= day <= 6 and 0 <= hour <= 23 and 0 <= minute <= 59):
+            continue
+        agent_id = str(s.get("agent_id", "")).strip()
+        if not agent_id:
+            continue
+        sid = str(s.get("id") or f"{agent_id}-{day}-{hour}-{minute}")
+        clean.append({
+            "id": sid,
+            "agent_id": agent_id,
+            "day": day,
+            "hour": hour,
+            "minute": minute,
+            "enabled": bool(s.get("enabled", True)),
+            "last_run_key": str(s.get("last_run_key", "") or ""),
+        })
+    with _lock:
+        os.makedirs(os.path.dirname(SCHEDULES_FILE), exist_ok=True)
+        tmp = SCHEDULES_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"schedules": clean}, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, SCHEDULES_FILE)
+    return clean
+
+
+def mark_schedule_run(schedule_id: str, run_key: str) -> None:
+    schedules = list_schedules()
+    changed = False
+    for s in schedules:
+        if s.get("id") == schedule_id:
+            s["last_run_key"] = run_key
+            changed = True
+            break
+    if changed:
+        save_schedules(schedules)

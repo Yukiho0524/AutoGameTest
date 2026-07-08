@@ -8,6 +8,9 @@ const api = async (path, opts) => {
 };
 
 let GAMES = [];
+let AGENTS = [];
+let SCHEDULES = [];
+const DAYS = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"];
 
 // ---------- tabs ----------
 $$(".tab").forEach(t => t.onclick = () => {
@@ -18,6 +21,7 @@ $$(".tab").forEach(t => t.onclick = () => {
   if (t.dataset.tab === "control") loadInstances();
   if (t.dataset.tab === "jobs") loadJobs();
   if (t.dataset.tab === "agents") loadAgents();
+  if (t.dataset.tab === "schedule") loadSchedule();
 });
 
 // ---------- games ----------
@@ -79,6 +83,8 @@ function editGame(g) {
   f.cu_app_name.value = lc.cu_app_name || "";
   f.instance.value = lc.instance ?? 0;
   f.package.value = lc.package || "";
+  f.learn_sources.value = (g.learn_sources || []).join("\n");
+  f.auto_learn.checked = false;
   applyPlatformFields();
   $("#learn-box").hidden = false;
   $("#learn-sources").value = (g.learn_sources || []).join("\n");
@@ -133,21 +139,33 @@ $("#game-form").onsubmit = async (e) => {
     : { exe_path: f.exe_path.value.trim(), steam_appid: f.steam_appid.value.trim(),
         epic_app_name: f.epic_app_name.value.trim(), aumid: f.aumid.value.trim(),
         window_title: f.window_title.value.trim(), cu_app_name: f.cu_app_name.value.trim() };
+  const learnSources = f.learn_sources.value.split("\n").map(s => s.trim()).filter(Boolean);
+  const autoLearn = f.auto_learn.checked;
   const game = { id: f.id.value || undefined, name: f.name.value.trim(),
-                 platform: p, control, launch };
+                 platform: p, control, launch, learn_sources: learnSources };
   const saved = await api("/api/games", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(game),
   });
+  let learnMsg = "";
+  if (autoLearn) {
+    const job = await api(`/api/games/${saved.id}/learn`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sources: learnSources, engine: "auto" }),
+    });
+    learnMsg = job.spawned ? `，已開始學習任務 #${job.id}` : `，但學習任務 #${job.id} 未能自動啟動`;
+  }
   resetGameForm();
   loadGames();
-  $("#platform-hint").textContent = `已儲存「${saved.name}」`;
+  loadJobs();
+  $("#platform-hint").textContent = `已儲存「${saved.name}」${learnMsg}`;
 };
 
 $("#form-reset").onclick = resetGameForm;
 function resetGameForm() {
   $("#game-form").reset();
   $("#game-form").id.value = "";
+  $("#game-form").auto_learn.checked = true;
   $("#form-title").textContent = "新增遊戲";
   $("#learn-box").hidden = true;
   applyPlatformFields();
@@ -159,9 +177,12 @@ $("#learn-btn").onclick = async () => {
   if (!gid) { alert("請先儲存遊戲再學習"); return; }
   const job = await api(`/api/games/${gid}/learn`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sources }),
+    body: JSON.stringify({ sources, engine: "auto" }),
   });
-  $("#learn-status").textContent = `已建立學習任務 #${job.id}。到 Claude Code 說「處理待辦任務」即可讓 AI 開始建立 Skill。`;
+  $("#learn-status").textContent = job.spawned
+    ? `已開始學習任務 #${job.id}。完成後會更新該遊戲的 Skill。`
+    : `已建立學習任務 #${job.id}，但無法自動啟動執行器。可在終端手動跑：python tools/run_learn.py --job ${job.id}`;
+  loadJobs();
 };
 
 // ---------- emulator control ----------
@@ -216,6 +237,7 @@ function fillAgentGameSelect() {
 }
 async function loadAgents() {
   const { agents } = await api("/api/agents");
+  AGENTS = agents;
   const list = $("#agent-list");
   list.innerHTML = "";
   agents.forEach(a => {
@@ -237,6 +259,120 @@ async function loadAgents() {
     list.appendChild(div);
   });
 }
+
+// ---------- schedule ----------
+async function loadSchedule() {
+  if (!AGENTS.length) {
+    const r = await api("/api/agents");
+    AGENTS = r.agents;
+  }
+  const { schedules } = await api("/api/schedules");
+  SCHEDULES = schedules || [];
+  renderScheduleAgents();
+  renderScheduleBoard();
+}
+
+function renderScheduleAgents() {
+  const list = $("#schedule-agent-list");
+  if (!list) return;
+  list.innerHTML = AGENTS.length ? "" : '<p class="hint">目前沒有 Agent。</p>';
+  AGENTS.forEach(a => {
+    const g = GAMES.find(x => x.id === a.game_id);
+    const div = document.createElement("div");
+    div.className = "agent-drag";
+    div.draggable = true;
+    div.dataset.agentId = a.id;
+    div.innerHTML = `<strong>${esc(a.name)}</strong><span>${esc(g ? g.name : a.game_id)}</span>`;
+    div.ondragstart = e => {
+      e.dataTransfer.setData("text/plain", a.id);
+      e.dataTransfer.effectAllowed = "copy";
+    };
+    list.appendChild(div);
+  });
+}
+
+function renderScheduleBoard() {
+  const board = $("#schedule-board");
+  if (!board) return;
+  board.innerHTML = "";
+  board.appendChild(scheduleHeaderCell("時間"));
+  DAYS.forEach(d => board.appendChild(scheduleHeaderCell(d)));
+  for (let hour = 0; hour < 24; hour++) {
+    const time = document.createElement("div");
+    time.className = "schedule-time";
+    time.textContent = `${String(hour).padStart(2, "0")}:00`;
+    board.appendChild(time);
+    for (let day = 0; day < 7; day++) {
+      const cell = document.createElement("div");
+      cell.className = "schedule-cell";
+      cell.dataset.day = day;
+      cell.dataset.hour = hour;
+      cell.ondragover = e => {
+        e.preventDefault();
+        cell.classList.add("drop");
+      };
+      cell.ondragleave = () => cell.classList.remove("drop");
+      cell.ondrop = e => {
+        e.preventDefault();
+        cell.classList.remove("drop");
+        const agentId = e.dataTransfer.getData("text/plain");
+        addSchedule(agentId, day, hour);
+      };
+      SCHEDULES
+        .filter(s => +s.day === day && +s.hour === hour)
+        .forEach(s => cell.appendChild(scheduleChip(s)));
+      board.appendChild(cell);
+    }
+  }
+}
+
+function scheduleHeaderCell(text) {
+  const el = document.createElement("div");
+  el.className = "schedule-day";
+  el.textContent = text;
+  return el;
+}
+
+function scheduleChip(s) {
+  const agent = AGENTS.find(a => a.id === s.agent_id);
+  const chip = document.createElement("div");
+  chip.className = "schedule-chip";
+  chip.innerHTML = `<span>${esc(agent ? agent.name : s.agent_id)}</span><button title="刪除">×</button>`;
+  chip.querySelector("button").onclick = () => {
+    SCHEDULES = SCHEDULES.filter(x => x.id !== s.id);
+    renderScheduleBoard();
+    $("#schedule-status").textContent = "排程已移除，記得按儲存排程。";
+  };
+  return chip;
+}
+
+function addSchedule(agentId, day, hour) {
+  if (!agentId) return;
+  const exists = SCHEDULES.some(s =>
+    s.agent_id === agentId && +s.day === day && +s.hour === hour && +(s.minute || 0) === 0);
+  if (exists) return;
+  SCHEDULES.push({
+    id: `${agentId}-${day}-${hour}-${Date.now()}`,
+    agent_id: agentId,
+    day,
+    hour,
+    minute: 0,
+    enabled: true,
+  });
+  renderScheduleBoard();
+  $("#schedule-status").textContent = "排程已加入，按儲存排程後才會生效。";
+}
+
+$("#schedule-save").onclick = async () => {
+  const r = await api("/api/schedules", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ schedules: SCHEDULES }),
+  });
+  SCHEDULES = r.schedules || [];
+  renderScheduleBoard();
+  $("#schedule-status").textContent = `已儲存 ${SCHEDULES.length} 筆排程。`;
+};
+$("#schedule-reload").onclick = loadSchedule;
 function editAgent(a) {
   const f = $("#agent-form");
   f.id.value = a.id; f.game_id.value = a.game_id;

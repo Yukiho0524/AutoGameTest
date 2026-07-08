@@ -17,6 +17,7 @@
     <button class="tab" data-tab="control">模擬器操控</button>
     <button class="tab" data-tab="agents">Agent</button>
     <button class="tab" data-tab="jobs">任務佇列</button>
+    <button class="tab" data-tab="schedule">排程表</button>
   </nav>
 
   <!-- ===== 遊戲庫 ===== -->
@@ -51,6 +52,15 @@
             </select>
           </label>
           <p class="hint" id="platform-hint"></p>
+
+          <label>學習資料來源
+            <textarea name="learn_sources" rows="3"
+              placeholder="可留空讓 AI 自行搜尋；也可每行貼一個官方網站、wiki、攻略網址"></textarea>
+          </label>
+          <label class="checkline">
+            <input name="auto_learn" type="checkbox" checked>
+            儲存後自動建立/更新 Skill
+          </label>
 
           <!-- desktop fields -->
           <div class="platform-fields" data-control="desktop">
@@ -154,7 +164,7 @@
   <!-- ===== 任務佇列 ===== -->
   <section id="jobs" class="panel">
     <h2>任務佇列</h2>
-    <p class="hint">「執行 Agent」會立即在背景執行（先用 Claude，額度用完自動切 Codex），完成後這裡顯示狀態與使用的引擎。「學習」任務仍交由 Claude Code 在對話中處理（說「處理待辦任務」）。</p>
+    <p class="hint">「學習」與「執行 Agent」都會立即在背景執行（先用 Claude，額度用完自動切 Codex），完成後這裡顯示狀態與使用的引擎。</p>
     <div class="control-bar">
       <button id="jobs-refresh">重新整理</button>
       <button id="jobs-clear-finished">清除已完成</button>
@@ -162,6 +172,27 @@
       <span class="hint">「全部清除」不會刪除執行中(running)的任務，避免中斷進行中的代打。</span>
     </div>
     <div id="job-list" class="cards"></div>
+  </section>
+
+  <!-- ===== 排程表 ===== -->
+  <section id="schedule" class="panel">
+    <div class="schedule-head">
+      <h2>週排程表</h2>
+      <div class="actions">
+        <button id="schedule-save" class="primary">儲存排程</button>
+        <button id="schedule-reload">重新載入</button>
+      </div>
+    </div>
+    <div class="schedule-layout">
+      <div class="schedule-board-wrap">
+        <div id="schedule-board" class="schedule-board"></div>
+      </div>
+      <aside class="agent-palette">
+        <h3>Agent</h3>
+        <div id="schedule-agent-list" class="agent-drag-list"></div>
+      </aside>
+    </div>
+    <p class="hint" id="schedule-status"></p>
   </section>
 
   <script src="app.js"></script>

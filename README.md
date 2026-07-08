@@ -40,6 +40,7 @@ python server.py
 - **模擬器操控**：即時顯示模擬器畫面，**點畫面就等於送 tap 到模擬器**（透過 ADB，不佔用你的實體滑鼠鍵盤）。可開自動更新。
 - **Agent**：建立綁定某遊戲的代打 agent（預設玩家人格 + 指令），可儲存、重複執行。
 - **任務佇列**：學習與執行 agent 產生的任務清單。
+- **排程表**：週一到週日、24 小時直條行事曆。把右側 Agent 拖到指定星期與整點，按「儲存排程」後，只要控制台保持執行，未來每週固定時間會自動建立並執行該 Agent 任務。
 
 ## 控制模式（兩種）
 
@@ -88,12 +89,18 @@ data/
 ## AI 認知任務如何執行（learn / run_agent）
 
 機械操作由 Python 控制台處理；**遊戲認知（學習、代打）由 Claude Code 執行**。
-控制台的「學習」「執行 Agent」按鈕會在 `data/jobs/` 寫入任務檔，狀態 `pending`。
-在 Claude Code 對話中說「**處理待辦任務**」，AI 就會：
-1. 讀 `data/jobs/*.json` 找 pending 任務
-2. learn：抓 `sources` 網頁 → 生成/更新 `.claude/skills/<遊戲>/SKILL.md`
-3. run_agent：載入該遊戲 skill + agent → 依控制模式操作遊戲 → 完成後回報
-4. 把任務檔標記 `done` 並填入 `result`
+控制台的「學習」「執行 Agent」按鈕會在 `data/jobs/` 寫入任務檔，並立即背景執行：
+1. learn：由 `tools/run_learn.py` 讀取遊戲設定與 `sources`，必要時請 AI 自行搜尋公開網路資料，生成/更新 `.claude/skills/<遊戲>/SKILL.md`
+2. run_agent：由 `tools/run_agent.py` 載入該遊戲 skill + agent → 依控制模式操作遊戲 → 完成後回報
+3. 任務檔會標記 `running` / `done` / `error`，並填入 `result`、`engine_used`、`attempts`
+
+新增遊戲時若勾選「儲存後自動建立/更新 Skill」，系統會自動建立學習任務。可填攻略/wiki/官方網站網址；若留空，AI 會嘗試自行查找公開資料。
+
+## 週排程
+
+排程儲存在 `data/schedules.json`。控制台啟動時會開一個背景排程器，每 20 秒檢查一次目前星期與時間；若命中排程，會強制建立一筆 `run_agent` job 並背景執行。為避免同一分鐘重複執行，排程項目會記錄 `last_run_key`。
+
+注意：目前排程依賴 `server.py` 正在執行；若電腦關機或控制台未開，該時段不會補跑。
 
 ## AI 引擎自動切換（Claude 額度用完 → Codex）
 
