@@ -1,33 +1,41 @@
 @echo off
+setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
 
-where py >nul 2>nul
+set "PY_CMD="
+
+py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)" >nul 2>nul
 if %errorlevel%==0 (
-  set "PY=py -3"
+  set "PY_CMD=py -3"
 ) else (
-  where python >nul 2>nul
-  if errorlevel 1 (
-    echo [ERROR] 找不到 Python 3。請先安裝 Python 3.11 或更新版本。
-    echo https://www.python.org/downloads/
-    pause
-    exit /b 1
+  python -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)" >nul 2>nul
+  if %errorlevel%==0 (
+    set "PY_CMD=python"
   )
-  set "PY=python"
 )
 
-echo [AutoGameTest] Running environment check...
-%PY% tools\doctor.py
+if not defined PY_CMD (
+  echo [ERROR] 找不到可用的 Python 3.10+。
+  echo.
+  echo 請安裝 Python 3.10 或更新版本，安裝時勾選 Add python.exe to PATH。
+  echo https://www.python.org/downloads/windows/
+  echo.
+  pause
+  exit /b 1
+)
+
+%PY_CMD% tools\launch.py
 if errorlevel 1 (
   echo.
-  echo [ERROR] 環境檢查未通過，請依照上方提示修正後再執行。
+  echo [ERROR] AutoGameTest 啟動失敗。
+  echo 請把 data\logs\startup.log 的內容貼給開發者。
+  echo.
   pause
   exit /b 1
 )
 
 echo.
-echo [AutoGameTest] Starting control panel...
-echo Open http://127.0.0.1:8777 in your browser.
-%PY% server.py
-pause
-
+echo [AutoGameTest] 已啟動。可以關閉這個視窗。
+timeout /t 3 >nul
+exit /b 0

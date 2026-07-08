@@ -13,6 +13,7 @@ start.bat
 ```
 
 `start.bat` 會先執行 `tools/doctor.py` 檢查 Python、資料夾寫入權限、8777 port、LDPlayer/ADB、Codex CLI 等環境狀態，再啟動控制台。
+若啟動失敗，視窗會提示錯誤並把啟動紀錄寫到 `data/logs/startup.log`。
 
 如果每台電腦的軟體安裝位置不同，請複製 `config.example.json` 成 `config/local.json`，填入本機路徑。例如：
 
@@ -31,6 +32,12 @@ start.bat
 
 ```bash
 python server.py
+```
+
+也可以單獨檢查環境：
+
+```bash
+python tools/doctor.py
 ```
 
 然後開 http://127.0.0.1:8777 。四個分頁：

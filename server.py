@@ -263,14 +263,21 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     os.makedirs(WEB_DIR, exist_ok=True)
     start_scheduler()
-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    try:
+        srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    except OSError as e:
+        print(f"AutoGameTest control panel failed to start on http://{HOST}:{PORT}")
+        print(f"Reason: {e}")
+        print("If another AutoGameTest window is already running, open that URL instead.")
+        return 1
     print(f"AutoGameTest control panel: http://{HOST}:{PORT}")
     print("Ctrl+C to stop.")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         srv.shutdown()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -77,7 +77,7 @@ def check_cli(label: str, path: str | None, executable_name: str) -> bool:
     if found:
         ok(f"{label}: {found}")
         return True
-    warn(f"{label}: not found; AI tasks will not run")
+    fail(f"{label}: not found")
     return False
 
 
@@ -87,6 +87,8 @@ def main() -> int:
     print()
 
     required_ok = True
+    os.makedirs(config.CONFIG_DIR, exist_ok=True)
+    os.makedirs(os.path.join(ROOT, "data", "logs"), exist_ok=True)
     required_ok &= check_python()
     required_ok &= check_writable(os.path.join(ROOT, "data"))
     check_port()
@@ -97,7 +99,7 @@ def main() -> int:
         ok(f"Local config: {config.LOCAL_CONFIG}")
     else:
         warn("config/local.json not found; using auto-detection/default paths")
-        warn("Copy config.example.json to config/local.json to set machine-specific paths")
+        warn("If paths differ on this PC, copy config.example.json to config/local.json")
     path_status("LDPlayer ldconsole", adb.LDCONSOLE)
     path_status("LDPlayer adb", adb.ADB)
     if not adb.available():
@@ -109,7 +111,9 @@ def main() -> int:
         from tools import ai_runner
     except ImportError:
         import ai_runner  # type: ignore
-    check_cli("Codex CLI", ai_runner.find_codex(), "codex")
+    required_ok &= check_cli("Codex CLI", ai_runner.find_codex(), "codex")
+    if not required_ok:
+        warn("Install Codex or set codex_path in config/local.json")
 
     print()
     if required_ok:
