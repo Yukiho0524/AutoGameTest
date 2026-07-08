@@ -80,12 +80,6 @@ data/
   agents/<遊戲名>-player.md   # 綁定該遊戲的代打 agent
 ```
 
-已建立的遊戲：
-| 遊戲 | 控制模式 | Skill | Agent | 驗證 |
-|---|---|---|---|---|
-| 遊戲王 Master Duel | desktop (Steam) | `skills/masterduel/` | `masterduel-player` | ✅ 啟動+每日領獎 |
-| SD Gundam G Generation Eternal | emulator (Android) | 待建 | 待建 | ⏸ 測試時官方維護中 |
-
 ## AI 認知任務如何執行（learn / run_agent）
 
 機械操作由 Python 控制台處理；**遊戲認知（學習、代打）由 Claude Code 執行**。
