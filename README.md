@@ -146,11 +146,13 @@ python tools/ai_runner.py "你的提示"
 ### 跑 Agent
 
 `tools/run_agent.py` 會把「角色 persona + 遊戲 skill 知識 + 操作指令表 + 任務」組成一份自足 prompt，交給 Codex 執行。
+背景 AI 任務預設 timeout 為 3600 秒（60 分鐘），可用 `--timeout` 覆寫。
 
 ```bash
 python tools/run_agent.py --agent masterduel-daily
 python tools/run_agent.py --game gget --task "完成每日任務"   # 用遊戲+任務
 python tools/run_agent.py --job <job_id>                     # 處理佇列任務並回寫狀態
+python tools/run_agent.py --job <job_id> --timeout 7200      # 長任務可自行拉長
 python tools/run_agent.py --agent <id> --print-prompt        # 只看組出的 prompt
 python tools/run_agent.py --agent <id> --no-fast             # 停用快速判斷層排查問題
 ```

@@ -3,7 +3,7 @@
 Usage
 -----
     python tools/ai_runner.py "your prompt here"
-    python tools/ai_runner.py --cwd C:/path --timeout 300 "prompt"
+    python tools/ai_runner.py --cwd C:/path --timeout 3600 "prompt"
     echo "prompt from stdin" | python tools/ai_runner.py -
 
 Exit code 0 if Codex produced a result, non-zero otherwise.
@@ -102,7 +102,7 @@ def run_codex(prompt: str, cwd: str | None, timeout: int, sandbox: str) -> dict:
             "output": out, "detail": _clip((proc.stderr or "").strip(), 2000)}
 
 
-def run_with_fallback(prompt: str, cwd: str | None = None, timeout: int = 600,
+def run_with_fallback(prompt: str, cwd: str | None = None, timeout: int = 3600,
                       engine: str = "codex", fallback: bool = False,
                       codex_sandbox: str = "workspace-write") -> dict:
     """Compatibility wrapper: AutoGameTest now always runs Codex only."""
@@ -120,7 +120,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Codex AI runner")
     ap.add_argument("prompt", nargs="?", help="prompt text, or '-' to read stdin")
     ap.add_argument("--cwd", default=None, help="working directory for the agent")
-    ap.add_argument("--timeout", type=int, default=600, help="timeout (s)")
+    ap.add_argument("--timeout", type=int, default=3600, help="timeout (s)")
     ap.add_argument("--engine", choices=["auto", "codex"], default="codex")
     ap.add_argument("--codex-sandbox", default="workspace-write",
                     choices=["read-only", "workspace-write", "danger-full-access"])

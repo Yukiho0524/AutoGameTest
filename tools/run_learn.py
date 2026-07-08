@@ -109,7 +109,7 @@ def _summarize_attempts(attempts: list[dict]) -> list[dict]:
 
 
 def run_learn(game_id: str, sources: list[str] | None = None, job_id: str | None = None,
-              engine: str = "codex", fallback: bool = False, timeout: int = 1200) -> dict:
+              engine: str = "codex", fallback: bool = False, timeout: int = 3600) -> dict:
     game = store.get_game(game_id)
     if not game:
         return {"ok": False, "error": f"遊戲不存在: {game_id}"}
@@ -167,7 +167,7 @@ def main(argv=None) -> int:
     ap.add_argument("--sources", nargs="*", default=None)
     ap.add_argument("--job", help="process queued learn job")
     ap.add_argument("--engine", choices=["auto", "codex"], default="codex")
-    ap.add_argument("--timeout", type=int, default=1200)
+    ap.add_argument("--timeout", type=int, default=3600)
     args = ap.parse_args(argv)
 
     game_id = args.game

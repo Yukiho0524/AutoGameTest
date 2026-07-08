@@ -123,7 +123,7 @@ computer-use 應用名稱「{cu}」。
 
 
 def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
-              engine="codex", fallback=False, timeout=1200,
+              engine="codex", fallback=False, timeout=3600,
               fast_mode=True, fast_steps=8,
               print_only=False) -> dict:
     if agent_id:
@@ -245,7 +245,7 @@ def main(argv=None):
     ap.add_argument("--task", help="任務內容（覆蓋 agent 預設 prompt）")
     ap.add_argument("--job", help="處理指定 job id 並回寫狀態")
     ap.add_argument("--engine", choices=["auto", "codex"], default="codex")
-    ap.add_argument("--timeout", type=int, default=1200)
+    ap.add_argument("--timeout", type=int, default=3600)
     ap.add_argument("--no-fast", action="store_true", help="停用 emulator 快速判斷層")
     ap.add_argument("--fast-steps", type=int, default=8, help="快速規則最多連續執行步數")
     ap.add_argument("--print-prompt", action="store_true", help="只組裝並印出 prompt，不執行")
