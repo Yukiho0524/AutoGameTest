@@ -32,6 +32,8 @@ start.bat
 }
 ```
 
+BlueStacks 路徑可填真正放 `HD-Player.exe` / `HD-Adb.exe` 的資料夾，例如 `D:\\Bluestack\\BlueStacks_nxt`；也可以只填外層資料夾，例如 `D:\\Bluestack`，系統會自動嘗試往下找 `BlueStacks_nxt` / `BlueStacks`。設定 key 也支援常見別名：`bluestack_dir`、`bluestack_player_path`、`bluestack_adb_path`。
+
 也可以用環境變數覆寫：`AUTOGAMETEST_LDPLAYER_DIR`、`AUTOGAMETEST_LDCONSOLE_PATH`、`AUTOGAMETEST_ADB_PATH`、`AUTOGAMETEST_BLUESTACKS_DIR`、`AUTOGAMETEST_BLUESTACKS_PLAYER_PATH`、`AUTOGAMETEST_BLUESTACKS_ADB_PATH`、`AUTOGAMETEST_BLUESTACKS_SERIAL`、`AUTOGAMETEST_BLUESTACKS_INSTANCE`、`AUTOGAMETEST_CODEX_PATH`。
 
 開發時也可直接啟動：

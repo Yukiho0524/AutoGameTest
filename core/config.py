@@ -31,13 +31,33 @@ def load() -> dict:
     return _cache
 
 
-def get(name: str, env: str | None = None, default: str = "") -> str:
-    if env:
-        value = os.environ.get(env, "").strip()
+def reload() -> dict:
+    global _cache
+    _cache = None
+    return load()
+
+
+def _clean(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return os.path.expandvars(os.path.expanduser(text))
+
+
+def get_any(names: list[str], envs: list[str] | None = None,
+            default: str = "") -> str:
+    """Read the first configured value from env vars or local.json aliases."""
+    for env in envs or []:
+        value = _clean(os.environ.get(env, ""))
         if value:
-            return os.path.expandvars(os.path.expanduser(value))
-    value = str(load().get(name, "") or "").strip()
-    if value:
-        return os.path.expandvars(os.path.expanduser(value))
+            return value
+    local = load()
+    for name in names:
+        value = _clean(local.get(name, ""))
+        if value:
+            return value
     return default
 
+
+def get(name: str, env: str | None = None, default: str = "") -> str:
+    return get_any([name], [env] if env else None, default)

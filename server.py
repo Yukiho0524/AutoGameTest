@@ -280,6 +280,7 @@ def _settings_check() -> dict:
 
 
 def build_diagnostics() -> dict:
+    adb.reload_config_paths()
     checks = []
     version = sys.version_info
     checks.append(_check(
@@ -475,14 +476,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_error(404)
             return self._json(detail)
         if p == "/api/emulator/instances":
+            adb.reload_config_paths()
             emulator = q.get("emulator", [None])[0]
             return self._json({"available": adb.available(emulator),
                                "instances": adb.list_instances(emulator)})
         if p == "/api/emulator/packages":
+            adb.reload_config_paths()
             emulator = q.get("emulator", [None])[0]
             serial = q.get("serial", [adb.serial_for(0, emulator)])[0]
             return self._json({"packages": adb.list_packages(serial, emulator=emulator)})
         if p == "/api/emulator/screenshot":
+            adb.reload_config_paths()
             emulator = q.get("emulator", [None])[0]
             serial = q.get("serial", [adb.serial_for(0, emulator)])[0]
             png = adb.screenshot(serial, emulator)
@@ -520,12 +524,15 @@ class Handler(BaseHTTPRequestHandler):
             g = store.get_game(m.group(1))
             if not g:
                 return self.send_error(404)
+            adb.reload_config_paths()
             return self._json(launcher.launch(g))
         if p == "/api/emulator/tap":
+            adb.reload_config_paths()
             serial = b.get("serial", adb.serial_for(0, b.get("emulator")))
             ok = adb.tap(serial, int(b["x"]), int(b["y"]), b.get("emulator"))
             return self._json({"ok": ok})
         if p == "/api/emulator/launch-instance":
+            adb.reload_config_paths()
             adb.launch_instance(int(b.get("index", 0)), b.get("emulator"))
             return self._json({"ok": True})
         m = re.match(r"^/api/games/([^/]+)/learn$", p)
