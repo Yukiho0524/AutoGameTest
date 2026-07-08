@@ -95,8 +95,17 @@ def main() -> int:
 
     print()
     print("Emulator tools")
-    if os.path.isfile(config.LOCAL_CONFIG):
-        ok(f"Local config: {config.LOCAL_CONFIG}")
+    local_status = config.status()
+    if os.path.isfile(config.LOCAL_CONFIG) and local_status.get("format") == "json":
+        keys = ", ".join(local_status.get("keys", [])) or "no values"
+        ok(f"Local config: {config.LOCAL_CONFIG} ({keys})")
+    elif os.path.isfile(config.LOCAL_CONFIG) and local_status.get("format") == "lenient":
+        keys = ", ".join(local_status.get("keys", [])) or "no values"
+        warn(f"Local config uses lenient parsing: {config.LOCAL_CONFIG} ({keys})")
+        warn(r"Use \\ or / in Windows paths to make local.json valid JSON.")
+    elif os.path.isfile(config.LOCAL_CONFIG):
+        fail(f"Local config read failed: {local_status.get('error', 'unknown error')}")
+        required_ok = False
     else:
         warn("config/local.json not found; using auto-detection/default paths")
         warn("If paths differ on this PC, copy config.example.json to config/local.json")

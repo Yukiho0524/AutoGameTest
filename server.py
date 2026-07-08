@@ -22,7 +22,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from core import store, platforms, launcher, adb
+from core import store, platforms, launcher, adb, config
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 _CREATE_NO_WINDOW = 0x08000000
@@ -301,8 +301,27 @@ def build_diagnostics() -> dict:
     ))
 
     local_config = os.path.join(ROOT, "config", "local.json")
-    if os.path.isfile(local_config):
-        checks.append(_check("ok", "local_config", "本機設定檔", local_config))
+    local_status = config.status()
+    if os.path.isfile(local_config) and local_status.get("format") == "json":
+        keys = ", ".join(local_status.get("keys", [])) or "沒有設定值"
+        checks.append(_check("ok", "local_config", "本機設定檔", local_config, f"已讀取：{keys}"))
+    elif os.path.isfile(local_config) and local_status.get("format") == "lenient":
+        keys = ", ".join(local_status.get("keys", [])) or "沒有設定值"
+        checks.append(_check(
+            "warn",
+            "local_config",
+            "本機設定檔",
+            f"{local_config}（寬容讀取：{keys}）",
+            "local.json 不是標準 JSON；Windows 路徑請使用 \\\\ 或 /，避免設定失效",
+        ))
+    elif os.path.isfile(local_config):
+        checks.append(_check(
+            "fail",
+            "local_config",
+            "本機設定檔",
+            f"{local_config} 讀取失敗：{local_status.get('error', 'unknown error')}",
+            "請檢查 JSON 格式；Windows 路徑請使用 \\\\ 或 /",
+        ))
     else:
         checks.append(_check("warn", "local_config", "本機設定檔", "尚未建立 config/local.json",
                              "路徑不一致時可由 config.example.json 複製建立"))
