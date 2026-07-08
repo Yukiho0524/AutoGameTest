@@ -147,6 +147,59 @@ def write_skill(game_id: str, content: str) -> None:
         f.write(content)
 
 
+def append_skill_lessons(game_id: str, lessons: list[str],
+                         source: str = "run_agent") -> dict:
+    g = get_game(game_id)
+    if not g:
+        return {"appended": 0, "skipped": len(lessons), "path": "", "error": "game not found"}
+
+    clean = []
+    for lesson in lessons[:12]:
+        text = re.sub(r"\s+", " ", str(lesson or "")).strip(" -\t\r\n")
+        if text and text not in clean:
+            clean.append(text[:700])
+    if not clean:
+        return {"appended": 0, "skipped": len(lessons), "path": "", "error": ""}
+
+    path = os.path.join(ROOT, g.get("skill_path", f".codex/skills/{game_id}/SKILL.md"))
+    content = ""
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    if not content.strip():
+        content = f"# {g.get('name') or game_id}\n\n## 經驗教訓\n"
+
+    date_tag = date.today().isoformat()
+    lines = []
+    skipped = 0
+    for text in clean:
+        if text in content:
+            skipped += 1
+            continue
+        lines.append(f"- {date_tag} [{source}] {text}")
+    if not lines:
+        return {"appended": 0, "skipped": skipped, "path": path, "error": ""}
+
+    block = "\n".join(lines) + "\n"
+    match = re.search(r"(?m)^(#{1,6})\s*經驗教訓\s*$", content)
+    if match:
+        level = len(match.group(1))
+        next_heading = re.search(rf"(?m)^#{{1,{level}}}\s+", content[match.end():])
+        insert_at = len(content) if not next_heading else match.end() + next_heading.start()
+        before = content[:insert_at].rstrip()
+        after = content[insert_at:].lstrip("\n")
+        content = before + "\n" + block
+        if after:
+            content += "\n" + after
+    else:
+        content = content.rstrip() + "\n\n## 經驗教訓\n" + block
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content if content.endswith("\n") else content + "\n")
+    return {"appended": len(lines), "skipped": skipped, "path": path, "error": ""}
+
+
 # ---------------- jobs ----------------
 # Learning a game and running an agent require AI cognition. The UI enqueues a
 # job file, then a Codex-backed runner processes it and marks it done.

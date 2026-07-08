@@ -189,8 +189,15 @@ python tools/fast_rules.py list gget --include-visual
 ## 學習迴圈（降低誤差的核心）
 
 1. **執行時**：每步操作後截圖驗證，畫面不符預期即停下重判
-2. **事後反思**：新學到的 UI 位置、流程變化、錯誤修正追加到 SKILL.md「經驗教訓」段
+2. **事後反思**：新學到的 UI 位置、流程變化、錯誤修正可透過 `AUTOGAMETEST_SKILL_LESSONS` 自動追加到 SKILL.md「經驗教訓」段
 3. **固化**：重複驗證穩定的流程從「AI 即興判斷」降級為「固定步驟 + AI 只驗證畫面」
+
+Agent 執行不會把每一步流水帳都寫進 Skill；完整紀錄仍保存在 `data/jobs/` 與 `data/logs/`。只有 Codex 在最終回覆中輸出的精煉區塊會寫入：
+
+```text
+AUTOGAMETEST_SKILL_LESSONS:
+["主畫面若出現公告彈窗，先點右上角關閉，再進每日任務。"]
+```
 
 ## 重要邊界
 

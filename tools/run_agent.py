@@ -60,6 +60,56 @@ def _format_job_result(result: dict) -> str:
     return head[:3000]
 
 
+def _extract_marked_json(text: str, marker: str):
+    idx = text.find(marker)
+    if idx < 0:
+        return None
+    tail = text[idx + len(marker):].lstrip(" :\n\r\t")
+    if tail.startswith("```"):
+        first_newline = tail.find("\n")
+        if first_newline >= 0:
+            tail = tail[first_newline + 1:]
+        end = tail.find("```")
+        if end >= 0:
+            tail = tail[:end]
+    decoder = json.JSONDecoder()
+    try:
+        obj, _ = decoder.raw_decode(tail.strip())
+        return obj
+    except json.JSONDecodeError:
+        return tail.strip()
+
+
+def extract_skill_lessons(text: str) -> list[str]:
+    obj = _extract_marked_json(text or "", "AUTOGAMETEST_SKILL_LESSONS")
+    if obj is None:
+        return []
+    if isinstance(obj, dict):
+        obj = obj.get("lessons") or obj.get("items") or [obj]
+    if isinstance(obj, str):
+        obj = [line for line in obj.splitlines() if line.strip()]
+    if not isinstance(obj, list):
+        return []
+    lessons = []
+    for item in obj[:12]:
+        if isinstance(item, str):
+            text = item
+        elif isinstance(item, dict):
+            text = (
+                item.get("lesson")
+                or item.get("text")
+                or item.get("note")
+                or item.get("summary")
+                or "；".join(f"{k}: {v}" for k, v in item.items() if v)
+            )
+        else:
+            continue
+        text = " ".join(str(text or "").split()).strip(" -")
+        if text and text not in lessons:
+            lessons.append(text[:700])
+    return lessons
+
+
 def _read(path_rel: str) -> str:
     path = os.path.join(ROOT, path_rel)
     if os.path.isfile(path):
@@ -119,6 +169,12 @@ computer-use 應用名稱「{cu}」。
 - 登入/帳密/付費畫面一律停止並回報，絕不代為輸入或消費。
 - 只做低頻選單操作與單人模式，不自動打線上排位對戰。
 - 完成後回報：做了哪些操作、獲得什麼（數值前後對照）、有無異常。
+- 若本次學到可重用的 UI 修正、流程變化、錯誤原因或安全操作經驗，請在最終回覆附上：
+AUTOGAMETEST_SKILL_LESSONS:
+```json
+["可重用教訓 1", "可重用教訓 2"]
+```
+  只放精煉教訓，不要放逐步流水帳、帳密、token、購買資訊或一次性雜訊。
 """
 
 
@@ -216,6 +272,14 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     if learned_visuals:
         visual_memory_merge = visual_memory.merge_entries(
             game.get("id", ""), learned_visuals, source="codex-output")
+    learned_lessons = extract_skill_lessons(result.get("output", ""))
+    skill_lessons_update = None
+    if learned_lessons:
+        skill_lessons_update = store.append_skill_lessons(
+            game.get("id", ""),
+            learned_lessons,
+            source=f"run_agent:{job_id or 'manual'}",
+        )
 
     if job_id:
         store.update_job(
@@ -227,6 +291,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             fast_decision=fast_result,
             fast_rules=fast_rules_merge,
             visual_memory=visual_memory_merge,
+            skill_lessons=skill_lessons_update,
             result=_format_job_result(result),
             error_trace=(result.get("traceback") or "")[:4000] or None)
     if fast_rules_merge:
@@ -235,6 +300,8 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
         result["fast_decision"] = fast_result
     if visual_memory_merge:
         result["visual_memory"] = visual_memory_merge
+    if skill_lessons_update:
+        result["skill_lessons"] = skill_lessons_update
     return result
 
 
