@@ -131,12 +131,31 @@ python tools/run_agent.py --agent masterduel-daily
 python tools/run_agent.py --game gget --task "完成每日任務"   # 用遊戲+任務
 python tools/run_agent.py --job <job_id>                     # 處理佇列任務並回寫狀態
 python tools/run_agent.py --agent <id> --print-prompt        # 只看組出的 prompt
+python tools/run_agent.py --agent <id> --no-fast             # 停用快速判斷層排查問題
 ```
 
 控制台按 Agent 的「執行」＝立即在背景跑這支，結果與使用引擎顯示在「任務佇列」。
 
 - **模擬器（ADB）agent 最適合**：操作全是 `adb ... input tap` 之類 shell 指令，模擬器 agent 用 `danger-full-access` sandbox 讓 Codex 能呼叫 adb。
 - **桌面（computer-use）agent 的限制**：headless / Codex 環境通常沒有 computer-use 工具，prompt 已指示「若無 computer-use 能力就回報需在互動 session 執行」，不會盲操作。這類 agent 仍建議在有 computer-use 的互動 session 跑。
+
+### 快速判斷層
+
+模擬器 agent 預設會先跑一層本地快速判斷器：
+
+1. 啟動遊戲並截圖
+2. 計算畫面 signature（sha256 + average hash）
+3. 比對 `data/fast_rules/<game_id>.json` 的安全規則
+4. 命中時直接用 ADB 執行 tap / swipe / wait；未命中才交給 Codex
+
+這能把已知彈窗、每日領獎、固定選單流程從「每次請 AI 重判」降成「本地規則秒處理」。規則必須命中截圖 hash 才會執行，登入、付費、轉蛋、PVP 等高風險畫面不應建立快速規則。
+
+Codex 完成操作後若確認某個畫面與動作安全穩定，可在最終輸出附上 `AUTOGAMETEST_FAST_RULES` JSON，runner 會自動合併到該遊戲的 fast rules。也可手動取得截圖 signature：
+
+```bash
+python tools/fast_rules.py signature path\to\screenshot.png
+python tools/fast_rules.py list gget
+```
 
 ## 學習迴圈（降低誤差的核心）
 

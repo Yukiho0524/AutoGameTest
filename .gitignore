@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 data/jobs/
 data/logs/
+data/artifacts/
 config/local.json
 *.tmp
 shot_test.png

@@ -32,7 +32,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from core import store, adb  # noqa: E402
+from core import store, adb, fast_agent  # noqa: E402
 import ai_runner  # noqa: E402
 
 
@@ -68,7 +68,7 @@ def _read(path_rel: str) -> str:
     return ""
 
 
-def build_agent_prompt(game: dict, task: str) -> str:
+def build_agent_prompt(game: dict, task: str, fast_context: str = "") -> str:
     """Compose a self-contained agent prompt any engine can execute."""
     persona = _read(game.get("agent_path", ""))
     skill = _read(game.get("skill_path", ""))
@@ -106,6 +106,8 @@ computer-use 應用名稱「{cu}」。
 
 {control}
 
+{fast_context}
+
 # 本次任務
 {task}
 
@@ -119,6 +121,7 @@ computer-use 應用名稱「{cu}」。
 
 def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
               engine="codex", fallback=False, timeout=1200,
+              fast_mode=True, fast_steps=8,
               print_only=False) -> dict:
     if agent_id:
         agent = store.get_agent(agent_id)
@@ -134,15 +137,55 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     if not task:
         return {"ok": False, "error": "缺少任務內容"}
 
-    prompt = build_agent_prompt(game, task)
+    if job_id:
+        store.update_job(job_id, status="running")
+
+    fast_result = None
+    if fast_mode and game.get("control") == "emulator" and not print_only:
+        try:
+            fast_result = fast_agent.run_fast_rules(
+                game, task=task, job_id=job_id, max_steps=fast_steps)
+        except Exception as e:
+            fast_result = {
+                "enabled": True,
+                "used": False,
+                "completed": False,
+                "handoff_reason": f"fast layer crashed: {e}",
+                "error_trace": traceback.format_exc()[:4000],
+            }
+        if job_id:
+            store.update_job(job_id, fast_decision=fast_result)
+        if fast_result.get("completed"):
+            output = (
+                "快速規則已完成本次任務。\n\n"
+                f"執行規則數：{len(fast_result.get('steps', []))}\n"
+                f"交接原因：{fast_result.get('handoff_reason', '')}")
+            result = {
+                "engine_used": "fast-rules",
+                "ok": True,
+                "output": output,
+                "reason": fast_result.get("handoff_reason", ""),
+                "attempts": [],
+                "fast_decision": fast_result,
+            }
+            if job_id:
+                store.update_job(
+                    job_id,
+                    status="done",
+                    engine_used="fast-rules",
+                    run_reason=result["reason"],
+                    attempts=[],
+                    fast_decision=fast_result,
+                    result=_format_job_result(result))
+            return result
+
+    fast_context = fast_agent.format_fast_context(game.get("id", ""), fast_result)
+    prompt = build_agent_prompt(game, task, fast_context=fast_context)
     if print_only:
         return {"ok": True, "prompt": prompt}
 
     # emulator agents need adb (network + external exe) -> full access sandbox
     sandbox = "danger-full-access" if game.get("control") == "emulator" else "workspace-write"
-
-    if job_id:
-        store.update_job(job_id, status="running")
 
     try:
         result = ai_runner.run_with_fallback(
@@ -158,6 +201,12 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             "traceback": traceback.format_exc(),
         }
 
+    learned_rules = fast_agent.extract_rule_block(result.get("output", ""))
+    fast_rules_merge = None
+    if learned_rules and game.get("control") == "emulator":
+        fast_rules_merge = fast_agent.merge_rules(
+            game.get("id", ""), learned_rules, source="codex-output")
+
     if job_id:
         store.update_job(
             job_id,
@@ -165,8 +214,14 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             engine_used=result.get("engine_used"),
             run_reason=result.get("reason", ""),
             attempts=_summarize_attempts(result.get("attempts", [])),
+            fast_decision=fast_result,
+            fast_rules=fast_rules_merge,
             result=_format_job_result(result),
             error_trace=(result.get("traceback") or "")[:4000] or None)
+    if fast_rules_merge:
+        result["fast_rules"] = fast_rules_merge
+    if fast_result:
+        result["fast_decision"] = fast_result
     return result
 
 
@@ -178,6 +233,8 @@ def main(argv=None):
     ap.add_argument("--job", help="處理指定 job id 並回寫狀態")
     ap.add_argument("--engine", choices=["auto", "codex"], default="codex")
     ap.add_argument("--timeout", type=int, default=1200)
+    ap.add_argument("--no-fast", action="store_true", help="停用 emulator 快速判斷層")
+    ap.add_argument("--fast-steps", type=int, default=8, help="快速規則最多連續執行步數")
     ap.add_argument("--print-prompt", action="store_true", help="只組裝並印出 prompt，不執行")
     args = ap.parse_args(argv)
 
@@ -193,7 +250,8 @@ def main(argv=None):
 
     res = run_agent(agent_id=agent_id, game_id=game_id, task=task, job_id=args.job,
                     engine=args.engine, fallback=False,
-                    timeout=args.timeout, print_only=args.print_prompt)
+                    timeout=args.timeout, fast_mode=not args.no_fast,
+                    fast_steps=args.fast_steps, print_only=args.print_prompt)
 
     if args.print_prompt and res.get("ok"):
         print(res["prompt"]); return 0
