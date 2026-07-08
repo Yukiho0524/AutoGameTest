@@ -20,9 +20,17 @@ from . import adb
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAST_RULES_DIR = os.path.join(ROOT, "data", "fast_rules")
+VISUAL_MEMORY_DIR = os.path.join(ROOT, "data", "visual_memory")
 ARTIFACTS_DIR = os.path.join(ROOT, "data", "artifacts")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 ALLOWED_ACTIONS = {"tap", "swipe", "wait", "launch_app", "stop_app", "screenshot", "report"}
+SAFE_MEMORY_RISKS = {"", "safe", "low", "routine", "known-safe", "ok"}
+BLOCKED_FAST_KEYWORDS = (
+    "login", "auth", "account", "password", "purchase", "payment", "paid",
+    "buy", "shop", "gacha", "pvp", "rank", "ranked",
+    "登入", "帳號", "密碼", "授權", "購買", "付款", "付費", "儲值",
+    "商店", "抽卡", "轉蛋", "對戰", "排位", "競技",
+)
 
 
 def _slugify(value: str) -> str:
@@ -61,6 +69,96 @@ def save_rules(game_id: str, data: dict) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(tmp, _rules_path(game_id))
+
+
+def _visual_memory_path(game_id: str) -> str:
+    return os.path.join(VISUAL_MEMORY_DIR, _slugify(game_id), "memory.json")
+
+
+def _has_blocked_keyword(*values: Any) -> bool:
+    text = " ".join(str(v or "") for v in values).lower()
+    return any(keyword in text for keyword in BLOCKED_FAST_KEYWORDS)
+
+
+def _safe_memory_action(action: dict) -> bool:
+    if not isinstance(action, dict):
+        return False
+    if action.get("type") not in ALLOWED_ACTIONS:
+        return False
+    return not _has_blocked_keyword(
+        action.get("type"),
+        action.get("note"),
+        action.get("message"),
+        action.get("risk"),
+    )
+
+
+def _safe_memory_entry(entry: dict) -> bool:
+    risk = str(entry.get("risk", "safe") or "").strip().lower()
+    if risk not in SAFE_MEMORY_RISKS:
+        return False
+    return not _has_blocked_keyword(
+        entry.get("label"),
+        entry.get("state"),
+        entry.get("note"),
+        entry.get("risk"),
+        " ".join(str(t) for t in entry.get("tags", []) if t is not None),
+    )
+
+
+def load_visual_memory_rules(game_id: str) -> list[dict]:
+    """Build conservative fast rules from safe visual-memory action hints."""
+    path = _visual_memory_path(game_id)
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    images = data.get("images", []) if isinstance(data, dict) else []
+    rules = []
+    for entry in images:
+        if not isinstance(entry, dict) or not _safe_memory_entry(entry):
+            continue
+        actions = []
+        for action in entry.get("actions", []):
+            if _safe_memory_action(action):
+                clean = _normalize_action(action)
+                if clean:
+                    actions.append(clean)
+        if not actions:
+            continue
+        signature = entry.get("signature", {})
+        if not isinstance(signature, dict):
+            continue
+        match = {}
+        if signature.get("sha256"):
+            match["sha256"] = str(signature["sha256"])
+        allow_ahash = entry.get("fast_match") or entry.get("max_distance") is not None or entry.get("fast_max_distance") is not None
+        if allow_ahash and signature.get("ahash"):
+            match["ahash"] = str(signature["ahash"])
+            match["max_distance"] = _safe_int(
+                entry.get("fast_max_distance", entry.get("max_distance", 0)))
+        for key in ("width", "height"):
+            if signature.get(key) is not None:
+                match[key] = _safe_int(signature.get(key))
+        if not match.get("sha256") and not match.get("ahash"):
+            continue
+        entry_id = str(entry.get("id") or entry.get("label") or "visual-memory")
+        rules.append({
+            "id": f"visual-{_slugify(entry_id)}",
+            "description": f"visual memory: {entry.get('label') or entry.get('state') or entry_id}",
+            "enabled": True,
+            "priority": _safe_int(entry.get("priority", -10), -10),
+            "match": match,
+            "actions": actions,
+            "complete": bool(entry.get("complete", False)),
+            "handoff": bool(entry.get("handoff", False)),
+            "source": "visual-memory",
+            "max_repeats": _safe_int(entry.get("max_repeats", 1), 1),
+        })
+    return rules
 
 
 def _iter_png_chunks(data: bytes):
@@ -288,9 +386,13 @@ def run_fast_rules(game: dict, task: str = "", job_id: str | None = None,
 
     game_id = str(game.get("id") or "")
     rules_data = load_rules(game_id)
-    rules = [r for r in rules_data.get("rules", []) if r.get("enabled", True)]
+    explicit_rules = [r for r in rules_data.get("rules", []) if r.get("enabled", True)]
+    visual_rules = load_visual_memory_rules(game_id)
+    rules = explicit_rules + visual_rules
     rules.sort(key=lambda r: int(r.get("priority", 0)), reverse=True)
     result["rules_loaded"] = len(rules)
+    result["fast_rules_loaded"] = len(explicit_rules)
+    result["visual_rules_loaded"] = len(visual_rules)
 
     lc = game.get("launch", {})
     emulator = adb.normalize_emulator(lc.get("emulator", "ldplayer"))
@@ -314,6 +416,7 @@ def run_fast_rules(game: dict, task: str = "", job_id: str | None = None,
     artifact_dir = _artifact_dir(job_id)
     result["artifact_dir"] = artifact_dir
     last_signature = None
+    repeat_counts: dict[str, int] = {}
     for step_index in range(max(0, max_steps)):
         png = adb.screenshot(serial, emulator)
         if not png:
@@ -339,10 +442,18 @@ def run_fast_rules(game: dict, task: str = "", job_id: str | None = None,
             result["handoff_reason"] = "no matching fast rule"
             break
 
+        repeat_key = f"{matched.get('id', '')}:{signature.get('sha256', '')}"
+        repeat_counts[repeat_key] = repeat_counts.get(repeat_key, 0) + 1
+        max_repeats = max(1, _safe_int(matched.get("max_repeats", 1), 1))
+        if repeat_counts[repeat_key] > max_repeats:
+            result["handoff_reason"] = "same fast rule repeated on unchanged screen"
+            break
+
         result["used"] = True
         step = {
             "rule_id": matched.get("id", ""),
             "description": matched.get("description", ""),
+            "source": matched.get("source", "fast-rule"),
             "match": match_reason,
             "screenshot": screenshot_path,
             "actions": [],
@@ -519,6 +630,8 @@ def format_fast_context(game_id: str, fast_result: dict | None) -> str:
         "# 快速判斷層（本地規則）",
         "系統已先用本地快速規則嘗試處理可辨識畫面；未知畫面才交給你判斷。",
         f"已載入規則數：{fast_result.get('rules_loaded', 0)}",
+        f"- fast_rules：{fast_result.get('fast_rules_loaded', 0)}",
+        f"- visual_memory：{fast_result.get('visual_rules_loaded', 0)}",
         f"已執行規則數：{len(steps)}",
         f"交接原因：{fast_result.get('handoff_reason', '')}",
     ]
@@ -533,7 +646,9 @@ def format_fast_context(game_id: str, fast_result: dict | None) -> str:
     if steps:
         lines.append("已執行：")
         for step in steps:
-            lines.append(f"- {step.get('rule_id')}: {step.get('description')} [{step.get('match')}]")
+            lines.append(
+                f"- {step.get('rule_id')}: {step.get('description')} "
+                f"source={step.get('source', 'fast-rule')} [{step.get('match')}]")
     lines.extend([
         "",
         "已知快速規則：",
