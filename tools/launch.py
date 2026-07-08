@@ -15,6 +15,7 @@ import traceback
 import urllib.error
 import urllib.request
 import webbrowser
+from datetime import datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 URL = "http://127.0.0.1:8777"
@@ -42,7 +43,7 @@ def port_open(host: str = "127.0.0.1", port: int = 8777) -> bool:
         sock.close()
 
 
-def diagnostics_ready() -> tuple[bool, str]:
+def diagnostics_ready() -> tuple[bool, str, dict]:
     req = urllib.request.Request(
         DIAGNOSTICS_URL,
         headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
@@ -52,12 +53,58 @@ def diagnostics_ready() -> tuple[bool, str]:
             text = resp.read(200000).decode("utf-8", "replace")
             data = json.loads(text)
     except urllib.error.HTTPError as e:
-        return False, f"HTTP {e.code} from {DIAGNOSTICS_URL}"
+        return False, f"HTTP {e.code} from {DIAGNOSTICS_URL}", {}
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as e:
-        return False, f"{type(e).__name__}: {e}"
+        return False, f"{type(e).__name__}: {e}", {}
     if isinstance(data, dict) and isinstance(data.get("checks"), list):
-        return True, "diagnostics API is ready"
-    return False, "diagnostics API returned unexpected JSON"
+        return True, "diagnostics API is ready", data
+    return False, "diagnostics API returned unexpected JSON", {}
+
+
+def parse_server_started(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").timestamp()
+    except ValueError:
+        return None
+
+
+def latest_runtime_mtime() -> float:
+    files = [
+        os.path.join(ROOT, "server.py"),
+        os.path.join(ROOT, "core", "adb.py"),
+        os.path.join(ROOT, "core", "config.py"),
+        os.path.join(ROOT, "web", "app.js"),
+        os.path.join(ROOT, "web", "style.css"),
+        os.path.join(ROOT, "config", "local.json"),
+    ]
+    mtimes = []
+    for path in files:
+        if not os.path.isfile(path):
+            continue
+        try:
+            mtimes.append(os.path.getmtime(path))
+        except OSError:
+            pass
+    return max(mtimes or [0])
+
+
+def running_server_is_current(data: dict) -> tuple[bool, str]:
+    project = os.path.abspath(str(data.get("project", "") or ""))
+    if os.path.normcase(project) != os.path.normcase(ROOT):
+        return False, f"running server project is {project or '(unknown)'}, expected {ROOT}"
+
+    started_at = str(data.get("system", {}).get("server_started_at", "") or "")
+    started_ts = parse_server_started(started_at)
+    if not started_ts:
+        return False, "running server does not expose server_started_at; treating it as an older version"
+
+    latest_mtime = latest_runtime_mtime()
+    if latest_mtime > started_ts + 1:
+        changed = datetime.fromtimestamp(latest_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        return False, f"project files/local config changed at {changed}, after server start {started_at}"
+    return True, f"running server is current; started at {started_at}"
 
 
 def pids_listening_on_port(port: int = 8777) -> list[int]:
@@ -181,14 +228,21 @@ def main() -> int:
         return rc
 
     if port_open():
-        ready, detail = diagnostics_ready()
+        ready, detail, data = diagnostics_ready()
         log("")
+        stale_reason = detail
         if ready:
-            log(f"[AutoGameTest] Control panel already appears to be running: {URL}")
-            open_browser()
-            return 0
+            current, reason = running_server_is_current(data)
+            if current:
+                log(f"[AutoGameTest] Control panel already appears to be running: {URL}")
+                log(f"[AutoGameTest] {reason}")
+                open_browser()
+                return 0
+            log("[AutoGameTest] Existing control panel is stale.")
+            log(f"[AutoGameTest] {reason}")
+            stale_reason = reason
         log("[AutoGameTest] Port 8777 is occupied, but the running server is not compatible with this version.")
-        log(f"[AutoGameTest] Health check failed: {detail}")
+        log(f"[AutoGameTest] Reason: {stale_reason}")
         log("[AutoGameTest] Trying to stop stale server.py and start the latest version...")
         if not stop_stale_server():
             log("[ERROR] Could not stop the process using port 8777.")
@@ -212,7 +266,7 @@ def main() -> int:
             log(f"[ERROR] Run manually for details: {sys.executable} server.py")
             log(f"[ERROR] Startup log: {LOG_FILE}")
             return proc.returncode or 1
-        ready, detail = diagnostics_ready() if port_open() else (False, "port not open")
+        ready, detail, _data = diagnostics_ready() if port_open() else (False, "port not open", {})
         if ready:
             log(f"[AutoGameTest] Control panel is ready: {URL}")
             open_browser()

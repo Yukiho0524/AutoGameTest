@@ -2,7 +2,7 @@
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const api = async (path, opts) => {
-  const r = await fetch(path, opts);
+  const r = await fetch(path, { cache: "no-store", ...(opts || {}) });
   const ct = r.headers.get("content-type") || "";
   return ct.includes("json") ? r.json() : r;
 };
@@ -562,6 +562,9 @@ function renderDiagnostics(data) {
   data = normalizeDiagnostics(data);
   const summary = data.summary;
   const counts = summary.counts || {};
+  const systemText = data.system?.server_started_at
+    ? `${data.system?.platform || ""} · server ${data.system.server_started_at}`
+    : data.system?.platform || "";
   $("#diagnostics-summary").innerHTML = `
     <div class="summary-card status-${esc(summary.status)}">
       <strong>${statusText(summary.status)}</strong>
@@ -573,7 +576,7 @@ function renderDiagnostics(data) {
     <div class="summary-card">
       <strong>Project</strong>
       <span>${esc(data.project || "")}</span>
-      <small>${esc(data.system?.platform || "")}</small>
+      <small>${esc(systemText)}</small>
     </div>`;
 
   const list = $("#diagnostics-list");

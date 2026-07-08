@@ -58,7 +58,8 @@ def _default_bluestacks_dirs() -> list[str]:
     return _dedupe_paths(dirs)
 
 
-def _bluestacks_dir_candidates(configured_dir: str = "") -> list[str]:
+def _bluestacks_dir_candidates(configured_dir: str = "",
+                               include_defaults: bool = True) -> list[str]:
     dirs = []
     if configured_dir:
         base = os.path.dirname(configured_dir) if os.path.isfile(configured_dir) else configured_dir
@@ -69,7 +70,8 @@ def _bluestacks_dir_candidates(configured_dir: str = "") -> list[str]:
             os.path.join(base, "Bluestacks_nxt"),
             os.path.join(base, "Bluestacks"),
         ])
-    dirs.extend(_default_bluestacks_dirs())
+    if include_defaults:
+        dirs.extend(_default_bluestacks_dirs())
     return _dedupe_paths(dirs)
 
 
@@ -81,12 +83,11 @@ def _resolve_file(configured_path: str, dirs: list[str], filename: str) -> str:
             candidate = os.path.join(configured_path, filename)
             if os.path.isfile(candidate):
                 return candidate
+        return configured_path
     for directory in dirs:
         candidate = os.path.join(directory, filename)
         if os.path.isfile(candidate):
             return candidate
-    if configured_path:
-        return configured_path
     return os.path.join(dirs[0], filename)
 
 
@@ -95,24 +96,29 @@ def _resolve_bluestacks_paths() -> tuple[str, str, str]:
         ["bluestacks_dir", "bluestack_dir", "bs_dir"],
         ["AUTOGAMETEST_BLUESTACKS_DIR", "AUTOGAMETEST_BLUESTACK_DIR"],
     )
-    dirs = _bluestacks_dir_candidates(configured_dir)
+    player_config = config.get_any(
+        ["bluestacks_player_path", "bluestack_player_path",
+         "bluestacks_player", "hd_player_path"],
+        ["AUTOGAMETEST_BLUESTACKS_PLAYER_PATH",
+         "AUTOGAMETEST_BLUESTACK_PLAYER_PATH"],
+    )
+    adb_config = config.get_any(
+        ["bluestacks_adb_path", "bluestack_adb_path",
+         "bluestacks_adb", "hd_adb_path"],
+        ["AUTOGAMETEST_BLUESTACKS_ADB_PATH",
+         "AUTOGAMETEST_BLUESTACK_ADB_PATH"],
+    )
+    dirs = _bluestacks_dir_candidates(
+        configured_dir,
+        include_defaults=not bool(configured_dir),
+    )
     player_path = _resolve_file(
-        config.get_any(
-            ["bluestacks_player_path", "bluestack_player_path",
-             "bluestacks_player", "hd_player_path"],
-            ["AUTOGAMETEST_BLUESTACKS_PLAYER_PATH",
-             "AUTOGAMETEST_BLUESTACK_PLAYER_PATH"],
-        ),
+        player_config,
         dirs,
         "HD-Player.exe",
     )
     adb_path = _resolve_file(
-        config.get_any(
-            ["bluestacks_adb_path", "bluestack_adb_path",
-             "bluestacks_adb", "hd_adb_path"],
-            ["AUTOGAMETEST_BLUESTACKS_ADB_PATH",
-             "AUTOGAMETEST_BLUESTACK_ADB_PATH"],
-        ),
+        adb_config,
         dirs,
         "HD-Adb.exe",
     )

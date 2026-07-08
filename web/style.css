@@ -128,6 +128,7 @@ button.small { padding: 4px 10px; font-size: 12px; }
 .summary-card strong { font-size: 15px; }
 .summary-card span, .summary-card small { color: var(--muted); overflow-wrap: anywhere; }
 .diagnostic-card.status-ok { border-left: 3px solid var(--accent2); }
+.diagnostic-card.status-info { border-left: 3px solid var(--accent); }
 .diagnostic-card.status-warn { border-left: 3px solid #f0b84f; }
 .diagnostic-card.status-fail { border-left: 3px solid var(--danger); }
 .summary-card.status-ok { border-color: rgba(47, 214, 168, .55); }

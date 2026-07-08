@@ -30,6 +30,16 @@ WEB_DIR = os.path.join(ROOT, "web")
 LOG_DIR = os.path.join(ROOT, "data", "logs")
 HOST, PORT = "127.0.0.1", 8777
 _scheduler_started = False
+SERVER_STARTED_AT = datetime.now()
+
+
+def _format_epoch(value: str | float | int | None) -> str:
+    if value in ("", None):
+        return "未知"
+    try:
+        return datetime.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError, OSError):
+        return "未知"
 
 
 def ai_timeout_seconds() -> int:
@@ -279,6 +289,27 @@ def _settings_check() -> dict:
     )
 
 
+def _local_emulator_values() -> str:
+    local = config.load()
+    keys = [
+        "ldplayer_dir",
+        "ldconsole_path",
+        "adb_path",
+        "bluestacks_dir",
+        "bluestack_dir",
+        "bluestacks_player_path",
+        "bluestack_player_path",
+        "bluestacks_adb_path",
+        "bluestack_adb_path",
+    ]
+    values = []
+    for key in keys:
+        value = str(local.get(key, "") or "").strip()
+        if value:
+            values.append(f"{key}={value}")
+    return "；".join(values)
+
+
 def build_diagnostics() -> dict:
     adb.reload_config_paths()
     checks = []
@@ -302,29 +333,46 @@ def build_diagnostics() -> dict:
 
     local_config = os.path.join(ROOT, "config", "local.json")
     local_status = config.status()
+    local_mtime = _format_epoch(local_status.get("mtime"))
     if os.path.isfile(local_config) and local_status.get("format") == "json":
         keys = ", ".join(local_status.get("keys", [])) or "沒有設定值"
-        checks.append(_check("ok", "local_config", "本機設定檔", local_config, f"已讀取：{keys}"))
+        checks.append(_check(
+            "ok",
+            "local_config",
+            "本機設定檔",
+            f"{local_config}（json，修改：{local_mtime}）",
+            f"已讀取：{keys}",
+        ))
     elif os.path.isfile(local_config) and local_status.get("format") == "lenient":
         keys = ", ".join(local_status.get("keys", [])) or "沒有設定值"
         checks.append(_check(
             "warn",
             "local_config",
             "本機設定檔",
-            f"{local_config}（寬容讀取：{keys}）",
-            "local.json 不是標準 JSON；Windows 路徑請使用 \\\\ 或 /，避免設定失效",
+            f"{local_config}（寬容讀取，修改：{local_mtime}）",
+            f"已讀取：{keys}。local.json 不是標準 JSON；Windows 路徑請使用 \\\\ 或 /",
         ))
     elif os.path.isfile(local_config):
         checks.append(_check(
             "fail",
             "local_config",
             "本機設定檔",
-            f"{local_config} 讀取失敗：{local_status.get('error', 'unknown error')}",
+            f"{local_config} 讀取失敗（修改：{local_mtime}）：{local_status.get('error', 'unknown error')}",
             "請檢查 JSON 格式；Windows 路徑請使用 \\\\ 或 /",
         ))
     else:
         checks.append(_check("warn", "local_config", "本機設定檔", "尚未建立 config/local.json",
                              "路徑不一致時可由 config.example.json 複製建立"))
+
+    local_emulator_values = _local_emulator_values()
+    if local_emulator_values:
+        checks.append(_check(
+            "info",
+            "local_emulator_values",
+            "local 模擬器設定值",
+            local_emulator_values,
+            "下方 LDPlayer / BlueStacks 卡片會顯示目前實際採用的解析後路徑",
+        ))
 
     ld_ok = False
     bs_ok = False
@@ -374,6 +422,7 @@ def build_diagnostics() -> dict:
             "platform": py_platform.platform(),
             "python": sys.version.split()[0],
             "executable": sys.executable,
+            "server_started_at": SERVER_STARTED_AT.strftime("%Y-%m-%d %H:%M:%S"),
         },
         "summary": {"status": status, "counts": counts},
         "checks": checks,
@@ -432,6 +481,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
         self.end_headers()
         self.wfile.write(body)
 
@@ -463,6 +515,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
         self.end_headers()
         self.wfile.write(data)
 

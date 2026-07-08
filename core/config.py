@@ -21,12 +21,19 @@ _status: dict = {
     "loaded": False,
     "error": "",
     "keys": [],
+    "mtime": "",
 }
 
 
 def _set_status(exists: bool, fmt: str, loaded: bool,
                 error: str = "", keys: list[str] | None = None) -> None:
     global _status
+    mtime = ""
+    if exists and os.path.isfile(LOCAL_CONFIG):
+        try:
+            mtime = str(os.path.getmtime(LOCAL_CONFIG))
+        except OSError:
+            mtime = ""
     _status = {
         "path": LOCAL_CONFIG,
         "exists": exists,
@@ -34,6 +41,7 @@ def _set_status(exists: bool, fmt: str, loaded: bool,
         "loaded": loaded,
         "error": error,
         "keys": sorted(keys or []),
+        "mtime": mtime,
     }
 
 
