@@ -13,6 +13,7 @@ start.bat
 ```
 
 `start.bat` 會先執行 `tools/doctor.py` 檢查 Python、資料夾寫入權限、8777 port、LDPlayer/ADB、Codex CLI 等環境狀態，再啟動控制台。
+它會透過 `tools/start.ps1` 搜尋 Python 3.10+，包含 `py` launcher、`python/python3` 指令、Windows registry，以及 Python.org 常見安裝目錄，所以 Python 未加入 PATH 時也有機會自動找到。
 若啟動失敗，視窗會提示錯誤並把啟動紀錄寫到 `data/logs/startup.log`。
 
 如果每台電腦的軟體安裝位置不同，請複製 `config.example.json` 成 `config/local.json`，填入本機路徑。例如：
