@@ -19,6 +19,7 @@
     <button class="tab" data-tab="jobs">任務佇列</button>
     <button class="tab" data-tab="schedule">排程表</button>
     <button class="tab" data-tab="diagnostics">診斷</button>
+    <button class="tab" data-tab="settings">設定</button>
   </nav>
 
   <!-- ===== 遊戲庫 ===== -->
@@ -238,6 +239,34 @@
       <aside class="diagnostics-side">
         <h3>最近 Log</h3>
         <div id="diagnostics-logs" class="log-file-list"></div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ===== 設定 ===== -->
+  <section id="settings" class="panel">
+    <div class="schedule-head">
+      <h2>設定</h2>
+      <div class="actions">
+        <button id="settings-reload">重新載入</button>
+      </div>
+    </div>
+    <div class="settings-layout">
+      <form id="settings-form" class="card settings-card">
+        <h3>AI 任務</h3>
+        <label>Timeout（分鐘）
+          <input id="settings-timeout-minutes" name="ai_timeout_minutes"
+                 type="number" min="1" max="1440" step="1" required>
+        </label>
+        <p class="hint">套用於學習 Skill 與執行 Agent 的背景 Codex 任務。</p>
+        <div class="actions">
+          <button type="submit" class="primary">儲存設定</button>
+        </div>
+        <p class="hint" id="settings-status"></p>
+      </form>
+      <aside class="card settings-card">
+        <h3>目前設定</h3>
+        <div id="settings-summary" class="setting-summary"></div>
       </aside>
     </div>
   </section>

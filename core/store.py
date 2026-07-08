@@ -11,8 +11,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_FILE = os.path.join(ROOT, "data", "games.json")
 JOBS_DIR = os.path.join(ROOT, "data", "jobs")
 SCHEDULES_FILE = os.path.join(ROOT, "data", "schedules.json")
+SETTINGS_FILE = os.path.join(ROOT, "data", "settings.json")
 SKILLS_DIR = os.path.join(ROOT, ".codex", "skills")
 AGENTS_DIR = os.path.join(ROOT, ".codex", "agents")
+DEFAULT_SETTINGS = {
+    "ai_timeout_seconds": 3600,
+}
 
 _lock = threading.Lock()
 
@@ -228,6 +232,42 @@ def update_job(job_id: str, **fields) -> dict | None:
 
 def get_agent(agent_id: str) -> dict | None:
     return next((a for a in _load()["agents"] if a["id"] == agent_id), None)
+
+
+# ---------------- settings ----------------
+
+def _clean_settings(settings: dict | None) -> dict:
+    clean = dict(DEFAULT_SETTINGS)
+    if isinstance(settings, dict):
+        clean.update(settings)
+    try:
+        timeout = int(clean.get("ai_timeout_seconds", DEFAULT_SETTINGS["ai_timeout_seconds"]))
+    except (TypeError, ValueError):
+        timeout = DEFAULT_SETTINGS["ai_timeout_seconds"]
+    clean["ai_timeout_seconds"] = max(60, min(86400, timeout))
+    return clean
+
+
+def get_settings() -> dict:
+    if not os.path.isfile(SETTINGS_FILE):
+        return dict(DEFAULT_SETTINGS)
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return dict(DEFAULT_SETTINGS)
+    return _clean_settings(data)
+
+
+def save_settings(settings: dict) -> dict:
+    clean = _clean_settings(settings)
+    with _lock:
+        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+        tmp = SETTINGS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(clean, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, SETTINGS_FILE)
+    return clean
 
 
 # ---------------- schedules ----------------

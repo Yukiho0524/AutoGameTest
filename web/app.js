@@ -11,6 +11,7 @@ let GAMES = [];
 let AGENTS = [];
 let SCHEDULES = [];
 let SELECTED_JOB_ID = null;
+let SETTINGS = {};
 const DAYS = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"];
 
 // ---------- tabs ----------
@@ -24,6 +25,7 @@ $$(".tab").forEach(t => t.onclick = () => {
   if (t.dataset.tab === "agents") loadAgents();
   if (t.dataset.tab === "schedule") loadSchedule();
   if (t.dataset.tab === "diagnostics") loadDiagnostics();
+  if (t.dataset.tab === "settings") loadSettings();
 });
 
 // ---------- games ----------
@@ -650,6 +652,38 @@ function normalizeDiagnostics(data) {
 function statusText(status) {
   return { ok: "環境正常", warn: "需要確認", fail: "需要修復" }[status] || status;
 }
+
+// ---------- settings ----------
+async function loadSettings() {
+  const { settings } = await api("/api/settings");
+  SETTINGS = settings || {};
+  const seconds = Number(SETTINGS.ai_timeout_seconds || 3600);
+  $("#settings-timeout-minutes").value = Math.round(seconds / 60);
+  renderSettings();
+}
+
+function renderSettings() {
+  const seconds = Number(SETTINGS.ai_timeout_seconds || 3600);
+  $("#settings-summary").innerHTML = `
+    <p><strong>AI 任務 timeout</strong></p>
+    <p>${Math.round(seconds / 60)} 分鐘</p>
+    <p class="hint">${seconds} 秒</p>`;
+}
+
+$("#settings-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const minutes = Number($("#settings-timeout-minutes").value || 60);
+  const seconds = Math.max(60, Math.min(86400, Math.round(minutes * 60)));
+  const r = await api("/api/settings", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ai_timeout_seconds: seconds }),
+  });
+  SETTINGS = r.settings || {};
+  $("#settings-status").textContent = `已儲存：${Math.round((SETTINGS.ai_timeout_seconds || seconds) / 60)} 分鐘`;
+  renderSettings();
+};
+
+$("#settings-reload").onclick = loadSettings;
 
 function formatJson(value) {
   return JSON.stringify(value ?? null, null, 2);

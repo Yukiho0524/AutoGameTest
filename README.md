@@ -53,6 +53,7 @@ python tools/doctor.py
 - **Agent**：建立綁定某遊戲的代打 agent（預設玩家人格 + 指令），可儲存、重複執行。
 - **任務佇列**：學習與執行 agent 產生的任務清單。
 - **排程表**：週一到週日、24 小時直條行事曆。把右側 Agent 拖到指定星期與整點，按「儲存排程」後，只要控制台保持執行，未來每週固定時間會自動建立並執行該 Agent 任務。
+- **設定**：調整背景 AI 任務 timeout 等本機設定。
 
 ## 控制模式（兩種）
 
@@ -146,7 +147,7 @@ python tools/ai_runner.py "你的提示"
 ### 跑 Agent
 
 `tools/run_agent.py` 會把「角色 persona + 遊戲 skill 知識 + 操作指令表 + 任務」組成一份自足 prompt，交給 Codex 執行。
-背景 AI 任務預設 timeout 為 3600 秒（60 分鐘），可用 `--timeout` 覆寫。
+背景 AI 任務預設 timeout 為 3600 秒（60 分鐘），可在控制台「設定」分頁調整，也可用 `--timeout` 覆寫。
 
 ```bash
 python tools/run_agent.py --agent masterduel-daily

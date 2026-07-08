@@ -32,10 +32,16 @@ HOST, PORT = "127.0.0.1", 8777
 _scheduler_started = False
 
 
-def spawn_runner(script_name: str, job_id: str, engine: str = "codex") -> bool:
+def ai_timeout_seconds() -> int:
+    return int(store.get_settings().get("ai_timeout_seconds", 3600))
+
+
+def spawn_runner(script_name: str, job_id: str, engine: str = "codex",
+                 timeout: int | None = None) -> bool:
     runner = os.path.join(ROOT, "tools", script_name)
     if not os.path.isfile(runner):
         return False
+    timeout = int(timeout or ai_timeout_seconds())
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         out_path = os.path.join(LOG_DIR, f"{job_id}.out.log")
@@ -44,7 +50,8 @@ def spawn_runner(script_name: str, job_id: str, engine: str = "codex") -> bool:
         err = open(err_path, "w", encoding="utf-8")
         try:
             subprocess.Popen(
-                [sys.executable, runner, "--job", job_id, "--engine", engine],
+                [sys.executable, runner, "--job", job_id, "--engine", engine,
+                 "--timeout", str(timeout)],
                 cwd=ROOT, creationflags=_CREATE_NO_WINDOW,
                 stdout=out, stderr=err,
                 stdin=subprocess.DEVNULL,
@@ -52,7 +59,8 @@ def spawn_runner(script_name: str, job_id: str, engine: str = "codex") -> bool:
         finally:
             out.close()
             err.close()
-        store.update_job(job_id, log_stdout=out_path, log_stderr=err_path)
+        store.update_job(job_id, log_stdout=out_path, log_stderr=err_path,
+                         ai_timeout_seconds=timeout)
         return True
     except Exception:
         return False
@@ -261,6 +269,16 @@ def _job_status_check() -> dict:
     return _check(level, "jobs", "任務佇列狀態", detail)
 
 
+def _settings_check() -> dict:
+    timeout = ai_timeout_seconds()
+    return _check(
+        "ok",
+        "ai_timeout",
+        "AI 任務 timeout",
+        f"{timeout} 秒（約 {timeout // 60} 分鐘）",
+    )
+
+
 def build_diagnostics() -> dict:
     checks = []
     version = sys.version_info
@@ -274,6 +292,7 @@ def build_diagnostics() -> dict:
     checks.append(_safe_check("data_writable", "資料目錄可寫入", _data_writable_check))
     checks.append(_safe_check("port", f"控制台 Port {PORT}", _port_check))
     checks.append(_safe_check("codex", "Codex CLI", _codex_check))
+    checks.append(_safe_check("ai_timeout", "AI 任務 timeout", _settings_check))
     checks.append(_safe_check(
         "start_bat",
         "Windows 啟動檔",
@@ -442,6 +461,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"jobs": store.list_jobs()})
         if p == "/api/schedules":
             return self._json({"schedules": store.list_schedules()})
+        if p == "/api/settings":
+            return self._json({"settings": store.get_settings()})
         if p == "/api/diagnostics":
             try:
                 return self._json(build_diagnostics())
@@ -491,6 +512,9 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/schedules":
             schedules = b.get("schedules", []) if isinstance(b, dict) else []
             return self._json({"schedules": store.save_schedules(schedules)})
+        if p == "/api/settings":
+            settings = store.save_settings(b if isinstance(b, dict) else {})
+            return self._json({"settings": settings})
         m = re.match(r"^/api/games/([^/]+)/launch$", p)
         if m:
             g = store.get_game(m.group(1))
