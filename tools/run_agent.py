@@ -32,7 +32,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from core import store, adb, fast_agent  # noqa: E402
+from core import store, adb, fast_agent, visual_memory  # noqa: E402
 import ai_runner  # noqa: E402
 
 
@@ -68,7 +68,8 @@ def _read(path_rel: str) -> str:
     return ""
 
 
-def build_agent_prompt(game: dict, task: str, fast_context: str = "") -> str:
+def build_agent_prompt(game: dict, task: str, fast_context: str = "",
+                       visual_context: str = "") -> str:
     """Compose a self-contained agent prompt any engine can execute."""
     persona = _read(game.get("agent_path", ""))
     skill = _read(game.get("skill_path", ""))
@@ -105,6 +106,8 @@ computer-use 應用名稱「{cu}」。
 {skill or '（尚無 skill，請先謹慎探索並記錄）'}
 
 {control}
+
+{visual_context}
 
 {fast_context}
 
@@ -180,7 +183,9 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             return result
 
     fast_context = fast_agent.format_fast_context(game.get("id", ""), fast_result)
-    prompt = build_agent_prompt(game, task, fast_context=fast_context)
+    visual_context = visual_memory.format_prompt_context(game.get("id", ""))
+    prompt = build_agent_prompt(
+        game, task, fast_context=fast_context, visual_context=visual_context)
     if print_only:
         return {"ok": True, "prompt": prompt}
 
@@ -206,6 +211,11 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     if learned_rules and game.get("control") == "emulator":
         fast_rules_merge = fast_agent.merge_rules(
             game.get("id", ""), learned_rules, source="codex-output")
+    learned_visuals = visual_memory.extract_memory_block(result.get("output", ""))
+    visual_memory_merge = None
+    if learned_visuals:
+        visual_memory_merge = visual_memory.merge_entries(
+            game.get("id", ""), learned_visuals, source="codex-output")
 
     if job_id:
         store.update_job(
@@ -216,12 +226,15 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             attempts=_summarize_attempts(result.get("attempts", [])),
             fast_decision=fast_result,
             fast_rules=fast_rules_merge,
+            visual_memory=visual_memory_merge,
             result=_format_job_result(result),
             error_trace=(result.get("traceback") or "")[:4000] or None)
     if fast_rules_merge:
         result["fast_rules"] = fast_rules_merge
     if fast_result:
         result["fast_decision"] = fast_result
+    if visual_memory_merge:
+        result["visual_memory"] = visual_memory_merge
     return result
 
 

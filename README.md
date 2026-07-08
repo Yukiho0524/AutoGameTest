@@ -87,6 +87,7 @@ web/
 data/
   games.json           # 遊戲與 agent 設定（單一事實來源）
   jobs/                # 學習/執行任務狀態
+  visual_memory/       # 遊戲測試截圖記憶（畫面狀態、signature、可點區域）
 .codex/
   skills/<遊戲名>/SKILL.md    # 遊戲知識庫
   agents/<遊戲名>-player.md   # 綁定該遊戲的代打 agent
@@ -101,6 +102,26 @@ data/
 3. 任務檔會標記 `running` / `done` / `error`，並填入 `result`、`engine_used`、`attempts`
 
 新增遊戲時若勾選「儲存後自動建立/更新 Skill」，系統會自動建立學習任務。可填攻略/wiki/官方網站網址；若留空，AI 會嘗試自行查找公開資料。
+
+### 圖片記憶
+
+遊戲測試除了文字 skill，也可以記「畫面長什麼樣」。圖片記憶存在 `data/visual_memory/<game_id>/memory.json`，必要截圖會複製到 `data/visual_memory/<game_id>/images/`。內容包含：
+
+- 截圖路徑與 signature（sha256 / ahash）
+- 畫面狀態、標籤、風險標記
+- UI 區域座標與安全動作提示
+
+手動加入測試截圖：
+
+```bash
+python tools/visual_memory.py add gget tmp\screens\home.png --label "主畫面" --state home --tags "home,safe" --note "可進入任務、活動、信箱"
+python tools/visual_memory.py list gget
+python tools/visual_memory.py context gget
+```
+
+`tools/run_learn.py` 會把圖片記憶整理進 Skill 的「圖片記憶」章節；`tools/run_agent.py` 會把圖片記憶放進執行 prompt，讓 AI 更快辨識畫面。Agent 完成後若輸出 `AUTOGAMETEST_VISUAL_MEMORY` JSON，runner 會自動合併新記憶。
+
+登入、付款、轉蛋、PVP 畫面可以記成高風險狀態，但不要記成可自動執行的安全動作。
 
 ## 週排程
 

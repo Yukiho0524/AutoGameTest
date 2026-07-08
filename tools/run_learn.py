@@ -19,7 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from core import store  # noqa: E402
+from core import store, visual_memory  # noqa: E402
 import ai_runner  # noqa: E402
 
 
@@ -47,6 +47,7 @@ def _read_existing_skill(game_id: str) -> str:
 
 def build_learn_prompt(game: dict, sources: list[str]) -> str:
     existing = _read_existing_skill(game["id"])
+    visual_context = visual_memory.format_prompt_context(game["id"])
     fetched = []
     for url in sources[:8]:
         text = _fetch_url(url)
@@ -70,6 +71,9 @@ def build_learn_prompt(game: dict, sources: list[str]) -> str:
 既有 Skill（若有，請保留有價值的內容並更新）：
 {existing_block}
 
+既有圖片記憶（若有，請整理進 SKILL.md 的「圖片記憶」章節）：
+{visual_context}
+
 要求：
 - 若資料不足，請主動查找公開網路資料；優先官方網站、官方公告、wiki、可靠攻略。
 - 不要輸出解釋，不要包 markdown code fence，只輸出 SKILL.md 本文。
@@ -81,9 +85,11 @@ def build_learn_prompt(game: dict, sources: list[str]) -> str:
   ## UI 地圖
   ## 例行任務
   ## 風險守則
+  ## 圖片記憶
   ## 操作流程
   ## 經驗教訓
 - 風險守則必須包含：不代輸帳密、不處理第三方登入授權、不代為消費、不自動打線上排位、每一步操作後截圖驗證。
+- 圖片記憶章節請描述已知畫面、截圖路徑、signature 摘要、可點區域、風險標籤；不要把大型圖片或 base64 直接寫進 SKILL.md。
 - 若是 Android/emulator 控制，請納入 ADB 截圖與 tap 的操作注意事項；若是 desktop 控制，請納入需 computer-use 的限制。
 """
 
