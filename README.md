@@ -22,11 +22,16 @@ start.bat
   "ldplayer_dir": "D:\\LDPlayer\\LDPlayer9",
   "ldconsole_path": "",
   "adb_path": "",
+  "bluestacks_dir": "C:\\Program Files\\BlueStacks_nxt",
+  "bluestacks_player_path": "",
+  "bluestacks_adb_path": "",
+  "bluestacks_serial": "127.0.0.1:5555",
+  "bluestacks_instance": "",
   "codex_path": ""
 }
 ```
 
-也可以用環境變數覆寫：`AUTOGAMETEST_LDPLAYER_DIR`、`AUTOGAMETEST_LDCONSOLE_PATH`、`AUTOGAMETEST_ADB_PATH`、`AUTOGAMETEST_CODEX_PATH`。
+也可以用環境變數覆寫：`AUTOGAMETEST_LDPLAYER_DIR`、`AUTOGAMETEST_LDCONSOLE_PATH`、`AUTOGAMETEST_ADB_PATH`、`AUTOGAMETEST_BLUESTACKS_DIR`、`AUTOGAMETEST_BLUESTACKS_PLAYER_PATH`、`AUTOGAMETEST_BLUESTACKS_ADB_PATH`、`AUTOGAMETEST_BLUESTACKS_SERIAL`、`AUTOGAMETEST_BLUESTACKS_INSTANCE`、`AUTOGAMETEST_CODEX_PATH`。
 
 開發時也可直接啟動：
 
@@ -53,7 +58,7 @@ python tools/doctor.py
 | 控制模式 | 適用平台 | 機制 | 佔用實體滑鼠鍵盤？ |
 |---|---|---|---|
 | `desktop` | Steam / Epic / Xbox / PC | computer-use 截圖+點擊 | 是（AI 操作時你不能同時用電腦）|
-| `emulator` | Android 模擬器（雷電）| ADB 截圖+input tap | **否（可同時作業）** |
+| `emulator` | Android 模擬器（雷電 / BlueStacks）| ADB 截圖+input tap | **否（可同時作業）** |
 
 A 方案 = emulator 模式，是目前主推架構。已驗證管線見 `data/` 與記憶檔。
 

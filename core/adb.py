@@ -1,8 +1,11 @@
-"""Thin wrapper around LDPlayer's ldconsole + bundled adb.
+"""Thin wrappers around Android emulator ADB backends.
 
-This is the control backend for `control == "emulator"` games. Every call here
-drives the emulator through ADB, which does NOT touch the host mouse/keyboard --
-that is the whole point of the A-plan (user can work while the AI plays).
+Supported emulator backends:
+- LDPlayer 9: ldconsole.exe + adb.exe
+- BlueStacks 5: HD-Player.exe + HD-Adb.exe
+
+All control still goes through ADB, so emulator games do not touch the host
+mouse/keyboard.
 """
 from __future__ import annotations
 
@@ -18,7 +21,25 @@ LDCONSOLE = config.get("ldconsole_path", "AUTOGAMETEST_LDCONSOLE_PATH",
 ADB = config.get("adb_path", "AUTOGAMETEST_ADB_PATH",
                  os.path.join(LDPLAYER_DIR, "adb.exe"))
 
-_CREATE_NO_WINDOW = 0x08000000  # avoid popping a console window on Windows
+_PROGRAM_FILES = os.environ.get("ProgramFiles", r"C:\Program Files")
+_BLUESTACKS_DEFAULT_DIR = os.path.join(_PROGRAM_FILES, "BlueStacks_nxt")
+if not os.path.isdir(_BLUESTACKS_DEFAULT_DIR):
+    _BLUESTACKS_DEFAULT_DIR = os.path.join(_PROGRAM_FILES, "BlueStacks")
+
+BLUESTACKS_DIR = config.get("bluestacks_dir", "AUTOGAMETEST_BLUESTACKS_DIR",
+                            _BLUESTACKS_DEFAULT_DIR)
+BLUESTACKS_PLAYER = config.get(
+    "bluestacks_player_path", "AUTOGAMETEST_BLUESTACKS_PLAYER_PATH",
+    os.path.join(BLUESTACKS_DIR, "HD-Player.exe"))
+BLUESTACKS_ADB = config.get(
+    "bluestacks_adb_path", "AUTOGAMETEST_BLUESTACKS_ADB_PATH",
+    os.path.join(BLUESTACKS_DIR, "HD-Adb.exe"))
+BLUESTACKS_SERIAL = config.get("bluestacks_serial", "AUTOGAMETEST_BLUESTACKS_SERIAL",
+                               "127.0.0.1:5555")
+BLUESTACKS_INSTANCE = config.get("bluestacks_instance",
+                                 "AUTOGAMETEST_BLUESTACKS_INSTANCE", "")
+
+_CREATE_NO_WINDOW = 0x08000000
 
 
 def _run(args: list[str], timeout: int = 30, binary: bool = False):
@@ -39,15 +60,44 @@ def _run(args: list[str], timeout: int = 30, binary: bool = False):
     return proc.returncode, out, err
 
 
-def available() -> bool:
-    return os.path.isfile(LDCONSOLE) and os.path.isfile(ADB)
+def normalize_emulator(emulator: str | None = None) -> str:
+    value = (emulator or "").strip().lower()
+    if value in ("bluestacks", "bluestack", "bs", "bs5"):
+        return "bluestacks"
+    return "ldplayer"
 
 
-def list_instances() -> list[dict]:
-    """Parse `ldconsole list2` into structured rows.
+def emulator_for_serial(serial: str | None) -> str:
+    serial = (serial or "").lower()
+    if serial.startswith("127.0.0.1:") or serial.startswith("localhost:"):
+        return "bluestacks"
+    return "ldplayer"
 
-    Columns: index,title,top_wnd,bind_wnd,running(0/1),pid,vbox_pid,w,h,dpi
-    """
+
+def adb_path_for(emulator: str | None = None) -> str:
+    return BLUESTACKS_ADB if normalize_emulator(emulator) == "bluestacks" else ADB
+
+
+def available(emulator: str | None = None) -> bool:
+    emu = normalize_emulator(emulator) if emulator else "all"
+    if emu == "ldplayer":
+        return os.path.isfile(LDCONSOLE) and os.path.isfile(ADB)
+    if emu == "bluestacks":
+        return os.path.isfile(BLUESTACKS_ADB)
+    return available("ldplayer") or available("bluestacks")
+
+
+def list_instances(emulator: str | None = None) -> list[dict]:
+    emu = normalize_emulator(emulator) if emulator else "all"
+    rows: list[dict] = []
+    if emu in ("all", "ldplayer"):
+        rows.extend(_list_ldplayer_instances())
+    if emu in ("all", "bluestacks"):
+        rows.extend(_list_bluestacks_instances())
+    return rows
+
+
+def _list_ldplayer_instances() -> list[dict]:
     rc, out, _ = _run([LDCONSOLE, "list2"])
     rows = []
     if rc != 0:
@@ -56,8 +106,14 @@ def list_instances() -> list[dict]:
         parts = line.split(",")
         if len(parts) < 5:
             continue
+        try:
+            index = int(parts[0])
+        except ValueError:
+            continue
         rows.append({
-            "index": int(parts[0]),
+            "emulator": "ldplayer",
+            "index": index,
+            "serial": serial_for(index, "ldplayer"),
             "title": parts[1],
             "running": parts[4] == "1",
             "width": int(parts[7]) if len(parts) > 7 and parts[7].isdigit() else None,
@@ -66,57 +122,111 @@ def list_instances() -> list[dict]:
     return rows
 
 
-def launch_instance(index: int = 0) -> None:
-    _run([LDCONSOLE, "launch", "--index", str(index)], timeout=15)
+def _list_bluestacks_instances() -> list[dict]:
+    if not available("bluestacks"):
+        return []
+    serial = serial_for(0, "bluestacks")
+    return [{
+        "emulator": "bluestacks",
+        "index": 0,
+        "serial": serial,
+        "title": "BlueStacks",
+        "running": adb_ready(serial, "bluestacks"),
+        "width": None,
+        "height": None,
+    }]
 
 
-def serial_for(index: int = 0) -> str:
-    """LDPlayer instance N maps to adb serial emulator-<5554 + N*2>."""
+def launch_instance(index: int = 0, emulator: str | None = None) -> bool:
+    emu = normalize_emulator(emulator)
+    if emu == "bluestacks":
+        if not os.path.isfile(BLUESTACKS_PLAYER):
+            return False
+        args = [BLUESTACKS_PLAYER]
+        if BLUESTACKS_INSTANCE:
+            args += ["--instance", BLUESTACKS_INSTANCE]
+        try:
+            subprocess.Popen(args, creationflags=_CREATE_NO_WINDOW,
+                             cwd=os.path.dirname(BLUESTACKS_PLAYER))
+            return True
+        except OSError:
+            return False
+    rc, _, _ = _run([LDCONSOLE, "launch", "--index", str(index)], timeout=15)
+    return rc == 0
+
+
+def serial_for(index: int = 0, emulator: str | None = None) -> str:
+    emu = normalize_emulator(emulator)
+    if emu == "bluestacks":
+        return BLUESTACKS_SERIAL
     return f"emulator-{5554 + index * 2}"
 
 
-def adb_ready(serial: str) -> bool:
-    rc, out, _ = _run([ADB, "-s", serial, "shell", "getprop", "sys.boot_completed"])
+def _ensure_connected(serial: str, emulator: str) -> None:
+    if normalize_emulator(emulator) == "bluestacks":
+        _run([adb_path_for(emulator), "connect", serial], timeout=8)
+
+
+def adb_ready(serial: str, emulator: str | None = None) -> bool:
+    emu = normalize_emulator(emulator or emulator_for_serial(serial))
+    _ensure_connected(serial, emu)
+    rc, out, _ = _run([adb_path_for(emu), "-s", serial, "shell", "getprop",
+                       "sys.boot_completed"])
     return rc == 0 and out.strip() == "1"
 
 
-def screenshot(serial: str) -> bytes | None:
-    """Capture a PNG frame. Screencap-to-device then pull avoids the pipe
-    corruption that stdout redirection causes on Windows."""
+def screenshot(serial: str, emulator: str | None = None) -> bytes | None:
+    emu = normalize_emulator(emulator or emulator_for_serial(serial))
+    adb = adb_path_for(emu)
+    _ensure_connected(serial, emu)
     dev = "/sdcard/_agt_cap.png"
-    rc, _, _ = _run([ADB, "-s", serial, "shell", "screencap", "-p", dev])
+    rc, _, _ = _run([adb, "-s", serial, "shell", "screencap", "-p", dev])
     if rc != 0:
         return None
-    rc, data, _ = _run([ADB, "-s", serial, "exec-out", "cat", dev], binary=True)
+    rc, data, _ = _run([adb, "-s", serial, "exec-out", "cat", dev], binary=True)
     if rc != 0 or not data:
         return None
     return data
 
 
-def tap(serial: str, x: int, y: int) -> bool:
-    rc, _, _ = _run([ADB, "-s", serial, "shell", "input", "tap", str(x), str(y)])
+def tap(serial: str, x: int, y: int, emulator: str | None = None) -> bool:
+    emu = normalize_emulator(emulator or emulator_for_serial(serial))
+    _ensure_connected(serial, emu)
+    rc, _, _ = _run([adb_path_for(emu), "-s", serial, "shell", "input", "tap",
+                     str(x), str(y)])
     return rc == 0
 
 
-def swipe(serial: str, x1: int, y1: int, x2: int, y2: int, ms: int = 300) -> bool:
-    rc, _, _ = _run([ADB, "-s", serial, "shell", "input", "swipe",
+def swipe(serial: str, x1: int, y1: int, x2: int, y2: int, ms: int = 300,
+          emulator: str | None = None) -> bool:
+    emu = normalize_emulator(emulator or emulator_for_serial(serial))
+    _ensure_connected(serial, emu)
+    rc, _, _ = _run([adb_path_for(emu), "-s", serial, "shell", "input", "swipe",
                      str(x1), str(y1), str(x2), str(y2), str(ms)])
     return rc == 0
 
 
-def launch_app(serial: str, package: str) -> bool:
-    rc, _, _ = _run([ADB, "-s", serial, "shell", "monkey", "-p", package,
+def launch_app(serial: str, package: str, emulator: str | None = None) -> bool:
+    emu = normalize_emulator(emulator or emulator_for_serial(serial))
+    _ensure_connected(serial, emu)
+    rc, _, _ = _run([adb_path_for(emu), "-s", serial, "shell", "monkey", "-p", package,
                      "-c", "android.intent.category.LAUNCHER", "1"])
     return rc == 0
 
 
-def stop_app(serial: str, package: str) -> bool:
-    rc, _, _ = _run([ADB, "-s", serial, "shell", "am", "force-stop", package])
+def stop_app(serial: str, package: str, emulator: str | None = None) -> bool:
+    emu = normalize_emulator(emulator or emulator_for_serial(serial))
+    _ensure_connected(serial, emu)
+    rc, _, _ = _run([adb_path_for(emu), "-s", serial, "shell", "am", "force-stop",
+                     package])
     return rc == 0
 
 
-def list_packages(serial: str, user_only: bool = True) -> list[str]:
-    args = [ADB, "-s", serial, "shell", "pm", "list", "packages"]
+def list_packages(serial: str, user_only: bool = True,
+                  emulator: str | None = None) -> list[str]:
+    emu = normalize_emulator(emulator or emulator_for_serial(serial))
+    _ensure_connected(serial, emu)
+    args = [adb_path_for(emu), "-s", serial, "shell", "pm", "list", "packages"]
     if user_only:
         args.append("-3")
     rc, out, _ = _run(args)

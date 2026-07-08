@@ -84,10 +84,16 @@
           <!-- emulator fields -->
           <div class="platform-fields" data-control="emulator" hidden>
             <label>模擬器
-              <select name="emulator"><option value="ldplayer">雷電 LDPlayer</option></select>
+              <select name="emulator" id="emulator-sel">
+                <option value="ldplayer">雷電 LDPlayer</option>
+                <option value="bluestacks">BlueStacks</option>
+              </select>
             </label>
             <label>實例編號
               <input name="instance" type="number" value="0" min="0">
+            </label>
+            <label>ADB 裝置序號
+              <input name="serial" placeholder="留空自動帶入，例如 emulator-5554 或 127.0.0.1:5555">
             </label>
             <label>App 套件名（package）
               <div class="inline">

@@ -61,21 +61,24 @@ def _launch_exe(exe_path: str | None) -> dict:
 
 
 def _launch_emulator(lc: dict) -> dict:
-    if not adb.available():
-        return {"ok": False, "method": "emulator", "detail": "LDPlayer/adb not found"}
+    emulator = adb.normalize_emulator(lc.get("emulator", "ldplayer"))
+    if not adb.available(emulator):
+        return {"ok": False, "method": "emulator",
+                "detail": f"{emulator}/adb not found"}
     index = lc.get("instance", 0)
-    serial = lc.get("serial") or adb.serial_for(index)
+    serial = lc.get("serial") or adb.serial_for(index, emulator)
     package = lc.get("package")
 
-    instances = {r["index"]: r for r in adb.list_instances()}
+    instances = {r["index"]: r for r in adb.list_instances(emulator)}
     if index not in instances or not instances[index]["running"]:
-        adb.launch_instance(index)
-        return {"ok": True, "method": "emulator",
-                "detail": f"啟動模擬器實例 {index} 中，開機後請再按一次啟動遊戲"}
+        started = adb.launch_instance(index, emulator)
+        return {"ok": started, "method": "emulator",
+                "detail": (f"啟動 {emulator} 實例 {index} 中，開機後請再按一次啟動遊戲"
+                           if started else f"無法啟動 {emulator} 實例 {index}")}
 
     if not package:
         return {"ok": False, "method": "emulator", "detail": "缺少 package"}
-    if not adb.adb_ready(serial):
+    if not adb.adb_ready(serial, emulator):
         return {"ok": False, "method": "emulator", "detail": f"{serial} 尚未就緒（開機中？）"}
-    ok = adb.launch_app(serial, package)
-    return {"ok": ok, "method": "emulator", "detail": f"{serial} -> {package}"}
+    ok = adb.launch_app(serial, package, emulator)
+    return {"ok": ok, "method": "emulator", "detail": f"{emulator} {serial} -> {package}"}

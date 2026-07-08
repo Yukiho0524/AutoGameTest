@@ -2,5 +2,10 @@
   "ldplayer_dir": "C:\\LDPlayer\\LDPlayer9",
   "ldconsole_path": "",
   "adb_path": "",
+  "bluestacks_dir": "C:\\Program Files\\BlueStacks_nxt",
+  "bluestacks_player_path": "",
+  "bluestacks_adb_path": "",
+  "bluestacks_serial": "127.0.0.1:5555",
+  "bluestacks_instance": "",
   "codex_path": ""
 }

@@ -75,16 +75,18 @@ def build_agent_prompt(game: dict, task: str) -> str:
     lc = game.get("launch", {})
 
     if game.get("control") == "emulator":
-        serial = lc.get("serial") or adb.serial_for(lc.get("instance", 0))
+        emulator = adb.normalize_emulator(lc.get("emulator", "ldplayer"))
+        serial = lc.get("serial") or adb.serial_for(lc.get("instance", 0), emulator)
+        adb_path = adb.adb_path_for(emulator)
         control = f"""# 控制方式（Android 模擬器 / ADB）
-本機 Windows。adb 執行檔：`{adb.ADB}`，目標裝置：`{serial}`，遊戲 package：`{lc.get('package','')}`。
+本機 Windows。模擬器：`{emulator}`，adb 執行檔：`{adb_path}`，目標裝置：`{serial}`，遊戲 package：`{lc.get('package','')}`。
 所有操作都用 shell 指令，不需要 GUI：
 - 截圖並取回本機檢視：
-  `"{adb.ADB}" -s {serial} shell screencap -p /sdcard/s.png`
-  然後 `"{adb.ADB}" -s {serial} pull /sdcard/s.png <本機路徑>` 再讀取該圖。
-- 點擊：`"{adb.ADB}" -s {serial} shell input tap <X> <Y>`
-- 滑動：`"{adb.ADB}" -s {serial} shell input swipe <x1> <y1> <x2> <y2> <ms>`
-- 啟動遊戲：`"{adb.ADB}" -s {serial} shell monkey -p {lc.get('package','')} -c android.intent.category.LAUNCHER 1`
+  `"{adb_path}" -s {serial} shell screencap -p /sdcard/s.png`
+  然後 `"{adb_path}" -s {serial} pull /sdcard/s.png <本機路徑>` 再讀取該圖。
+- 點擊：`"{adb_path}" -s {serial} shell input tap <X> <Y>`
+- 滑動：`"{adb_path}" -s {serial} shell input swipe <x1> <y1> <x2> <y2> <ms>`
+- 啟動遊戲：`"{adb_path}" -s {serial} shell monkey -p {lc.get('package','')} -c android.intent.category.LAUNCHER 1`
 每執行一個操作後務必重新截圖，確認畫面符合預期再進行下一步。"""
     else:
         cu = lc.get("cu_app_name", "")

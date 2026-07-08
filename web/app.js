@@ -57,6 +57,14 @@ function platformLabel(p) {
   return { steam: "Steam", epic: "Epic", xbox: "Xbox", pc: "PC", android: "Android" }[p] || p;
 }
 
+function emulatorLabel(e) {
+  return { ldplayer: "LDPlayer", bluestacks: "BlueStacks" }[e] || e || "Emulator";
+}
+
+function defaultSerialFor(emulator, instance = 0) {
+  return emulator === "bluestacks" ? "127.0.0.1:5555" : `emulator-${5554 + (+instance || 0) * 2}`;
+}
+
 async function launchGame(id) {
   const r = await api(`/api/games/${id}/launch`, { method: "POST" });
   alert(r.ok ? `啟動成功（${r.method}）\n${r.detail}` : `啟動失敗：${r.detail}`);
@@ -81,7 +89,9 @@ function editGame(g) {
   f.aumid.value = lc.aumid || "";
   f.window_title.value = lc.window_title || "";
   f.cu_app_name.value = lc.cu_app_name || "";
+  f.emulator.value = lc.emulator || "ldplayer";
   f.instance.value = lc.instance ?? 0;
+  f.serial.value = lc.serial || "";
   f.package.value = lc.package || "";
   f.learn_sources.value = (g.learn_sources || []).join("\n");
   f.auto_learn.checked = false;
@@ -108,6 +118,10 @@ $("#detect-btn").onclick = async () => {
 };
 
 $("#platform-sel").onchange = applyPlatformFields;
+$("#emulator-sel").onchange = () => {
+  const f = $("#game-form");
+  f.serial.placeholder = `留空自動帶入：${defaultSerialFor(f.emulator.value, f.instance.value)}`;
+};
 function applyPlatformFields() {
   const p = $("#game-form").platform.value;
   const control = p === "android" ? "emulator" : "desktop";
@@ -118,9 +132,10 @@ function applyPlatformFields() {
 }
 
 $("#pkg-btn").onclick = async () => {
+  const emulator = $("#game-form").emulator.value || "ldplayer";
   const inst = $("#game-form").instance.value || 0;
-  const serial = `emulator-${5554 + inst * 2}`;
-  const { packages } = await api(`/api/emulator/packages?serial=${serial}`);
+  const serial = $("#game-form").serial.value.trim() || defaultSerialFor(emulator, inst);
+  const { packages } = await api(`/api/emulator/packages?emulator=${encodeURIComponent(emulator)}&serial=${encodeURIComponent(serial)}`);
   const dl = $("#pkg-list");
   dl.innerHTML = "";
   packages.forEach(p => { const o = document.createElement("option"); o.value = p; dl.appendChild(o); });
@@ -135,7 +150,8 @@ $("#game-form").onsubmit = async (e) => {
   const control = p === "android" ? "emulator" : "desktop";
   const launch = control === "emulator"
     ? { emulator: f.emulator.value, instance: +f.instance.value,
-        serial: `emulator-${5554 + (+f.instance.value) * 2}`, package: f.package.value.trim() }
+        serial: f.serial.value.trim() || defaultSerialFor(f.emulator.value, f.instance.value),
+        package: f.package.value.trim() }
     : { exe_path: f.exe_path.value.trim(), steam_appid: f.steam_appid.value.trim(),
         epic_app_name: f.epic_app_name.value.trim(), aumid: f.aumid.value.trim(),
         window_title: f.window_title.value.trim(), cu_app_name: f.cu_app_name.value.trim() };
@@ -190,12 +206,13 @@ async function loadInstances() {
   const { available, instances } = await api("/api/emulator/instances");
   const sel = $("#serial-sel");
   sel.innerHTML = "";
-  if (!available) { $("#screen-status").textContent = "找不到雷電模擬器/adb"; return; }
+  if (!available) { $("#screen-status").textContent = "找不到可用模擬器/adb"; return; }
   instances.forEach(i => {
-    const serial = `emulator-${5554 + i.index * 2}`;
+    const serial = i.serial || defaultSerialFor(i.emulator, i.index);
     const o = document.createElement("option");
     o.value = serial;
-    o.textContent = `[${i.index}] ${i.title} ${i.running ? "▶ 執行中" : "⏸ 未啟動"}`;
+    o.dataset.emulator = i.emulator || "ldplayer";
+    o.textContent = `${emulatorLabel(o.dataset.emulator)} [${i.index}] ${i.title} ${serial} ${i.running ? "▶ 執行中" : "⏸ 未啟動"}`;
     sel.appendChild(o);
   });
 }
@@ -203,10 +220,11 @@ $("#refresh-shot").onclick = refreshShot;
 function refreshShot() {
   const serial = $("#serial-sel").value;
   if (!serial) return;
+  const emulator = $("#serial-sel").selectedOptions[0]?.dataset.emulator || "";
   const img = $("#screen");
   img.onload = () => { img.style.display = "block"; $("#screen-status").textContent = ""; };
   img.onerror = () => { $("#screen-status").textContent = "截圖失敗（模擬器是否已開機？）"; };
-  img.src = `/api/emulator/screenshot?serial=${serial}&t=${Date.now()}`;
+  img.src = `/api/emulator/screenshot?serial=${encodeURIComponent(serial)}&emulator=${encodeURIComponent(emulator)}&t=${Date.now()}`;
 }
 $("#screen").onclick = async (e) => {
   const img = e.target;
@@ -215,7 +233,11 @@ $("#screen").onclick = async (e) => {
   const y = Math.round((e.clientY - rect.top) / rect.height * img.naturalHeight);
   await api("/api/emulator/tap", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ serial: $("#serial-sel").value, x, y }),
+    body: JSON.stringify({
+      serial: $("#serial-sel").value,
+      emulator: $("#serial-sel").selectedOptions[0]?.dataset.emulator || "",
+      x, y
+    }),
   });
   setTimeout(refreshShot, 400);
 };

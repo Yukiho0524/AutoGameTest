@@ -172,14 +172,17 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/schedules":
             return self._json({"schedules": store.list_schedules()})
         if p == "/api/emulator/instances":
-            return self._json({"available": adb.available(),
-                               "instances": adb.list_instances()})
+            emulator = q.get("emulator", [None])[0]
+            return self._json({"available": adb.available(emulator),
+                               "instances": adb.list_instances(emulator)})
         if p == "/api/emulator/packages":
-            serial = q.get("serial", ["emulator-5554"])[0]
-            return self._json({"packages": adb.list_packages(serial)})
+            emulator = q.get("emulator", [None])[0]
+            serial = q.get("serial", [adb.serial_for(0, emulator)])[0]
+            return self._json({"packages": adb.list_packages(serial, emulator=emulator)})
         if p == "/api/emulator/screenshot":
-            serial = q.get("serial", ["emulator-5554"])[0]
-            png = adb.screenshot(serial)
+            emulator = q.get("emulator", [None])[0]
+            serial = q.get("serial", [adb.serial_for(0, emulator)])[0]
+            png = adb.screenshot(serial, emulator)
             if not png:
                 return self.send_error(503, "screenshot failed")
             self.send_response(200)
@@ -213,10 +216,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_error(404)
             return self._json(launcher.launch(g))
         if p == "/api/emulator/tap":
-            ok = adb.tap(b.get("serial", "emulator-5554"), int(b["x"]), int(b["y"]))
+            serial = b.get("serial", adb.serial_for(0, b.get("emulator")))
+            ok = adb.tap(serial, int(b["x"]), int(b["y"]), b.get("emulator"))
             return self._json({"ok": ok})
         if p == "/api/emulator/launch-instance":
-            adb.launch_instance(int(b.get("index", 0)))
+            adb.launch_instance(int(b.get("index", 0)), b.get("emulator"))
             return self._json({"ok": True})
         m = re.match(r"^/api/games/([^/]+)/learn$", p)
         if m:

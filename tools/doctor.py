@@ -102,8 +102,10 @@ def main() -> int:
         warn("If paths differ on this PC, copy config.example.json to config/local.json")
     path_status("LDPlayer ldconsole", adb.LDCONSOLE)
     path_status("LDPlayer adb", adb.ADB)
+    path_status("BlueStacks player", adb.BLUESTACKS_PLAYER)
+    path_status("BlueStacks adb", adb.BLUESTACKS_ADB)
     if not adb.available():
-        warn("LDPlayer is optional unless you use Android emulator agents")
+        warn("No emulator ADB backend found. Install LDPlayer/BlueStacks or set paths in config/local.json.")
 
     print()
     print("AI CLIs")
