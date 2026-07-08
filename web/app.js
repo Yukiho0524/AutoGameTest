@@ -537,12 +537,28 @@ function renderLog(kind, log) {
 // ---------- diagnostics ----------
 async function loadDiagnostics() {
   $("#diagnostics-summary").innerHTML = '<span class="badge">checking</span>';
-  const data = await api("/api/diagnostics");
-  renderDiagnostics(data);
+  try {
+    const data = await fetchDiagnostics();
+    renderDiagnostics(data);
+  } catch (e) {
+    renderDiagnostics({
+      generated_at: new Date().toLocaleString(),
+      project: location.href,
+      summary: { status: "fail", counts: { ok: 0, warn: 0, fail: 1 } },
+      checks: [{
+        level: "fail",
+        title: "診斷 API 失敗",
+        detail: e.message || String(e),
+        action: "請重啟控制台，或確認目前 server.py 是否為最新版",
+      }],
+      logs: [],
+    });
+  }
 }
 
 function renderDiagnostics(data) {
-  const summary = data.summary || { status: "unknown", counts: {} };
+  data = normalizeDiagnostics(data);
+  const summary = data.summary;
   const counts = summary.counts || {};
   $("#diagnostics-summary").innerHTML = `
     <div class="summary-card status-${esc(summary.status)}">
@@ -584,6 +600,52 @@ function renderDiagnostics(data) {
 }
 
 $("#diagnostics-refresh").onclick = loadDiagnostics;
+
+async function fetchDiagnostics() {
+  const r = await fetch("/api/diagnostics", { cache: "no-store" });
+  const text = await r.text();
+  if (!r.ok) {
+    throw new Error(`HTTP ${r.status}: ${text.slice(0, 220)}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`診斷端點沒有回傳 JSON：${text.slice(0, 220)}`);
+  }
+}
+
+function normalizeDiagnostics(data) {
+  const checks = Array.isArray(data?.checks) ? data.checks : [];
+  const counts = { ok: 0, warn: 0, fail: 0, info: 0 };
+  checks.forEach(c => {
+    const level = ["ok", "warn", "fail", "info"].includes(c?.level) ? c.level : "fail";
+    counts[level] += 1;
+  });
+  const fallbackStatus = counts.fail ? "fail" : counts.warn ? "warn" : checks.length ? "ok" : "fail";
+  const summary = data?.summary && typeof data.summary === "object" ? data.summary : {};
+  summary.status = ["ok", "warn", "fail", "info"].includes(summary.status)
+    ? summary.status
+    : fallbackStatus;
+  summary.counts = summary.counts && typeof summary.counts === "object" ? summary.counts : counts;
+  if (!checks.length) {
+    checks.push({
+      level: "fail",
+      title: "診斷資料格式異常",
+      detail: "前端沒有收到 checks 陣列，因此無法顯示各項檢查。",
+      action: "請重啟控制台，或確認 server.py 是否為最新版",
+    });
+    summary.status = "fail";
+    summary.counts = { ok: 0, warn: 0, fail: 1, info: 0 };
+  }
+  return {
+    generated_at: data?.generated_at || "",
+    project: data?.project || "",
+    system: data?.system || {},
+    summary,
+    checks,
+    logs: Array.isArray(data?.logs) ? data.logs : [],
+  };
+}
 
 function statusText(status) {
   return { ok: "環境正常", warn: "需要確認", fail: "需要修復" }[status] || status;

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -178,6 +179,31 @@ def _check(level: str, key: str, title: str, detail: str, action: str = "") -> d
     return {"level": level, "key": key, "title": title, "detail": detail, "action": action}
 
 
+def _log_diagnostics_error(title: str, exc: BaseException) -> None:
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        path = os.path.join(LOG_DIR, "diagnostics.err.log")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {title}\n")
+            f.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+    except OSError:
+        pass
+
+
+def _safe_check(key: str, title: str, fn) -> dict:
+    try:
+        return fn()
+    except Exception as e:
+        _log_diagnostics_error(title, e)
+        return _check(
+            "fail",
+            key,
+            title,
+            f"診斷檢查失敗：{type(e).__name__}: {e}",
+            "請查看 data/logs/diagnostics.err.log，或把診斷頁截圖回報",
+        )
+
+
 def _file_check(key: str, title: str, path: str, required: bool = False) -> dict:
     if path and os.path.isfile(path):
         return _check("ok", key, title, path)
@@ -245,10 +271,14 @@ def build_diagnostics() -> dict:
         f"{version.major}.{version.minor}.{version.micro} ({sys.executable})",
         "" if version >= (3, 10) else "請安裝 Python 3.10 以上並加入 PATH",
     ))
-    checks.append(_data_writable_check())
-    checks.append(_port_check())
-    checks.append(_codex_check())
-    checks.append(_file_check("start_bat", "Windows 啟動檔", os.path.join(ROOT, "start.bat"), True))
+    checks.append(_safe_check("data_writable", "資料目錄可寫入", _data_writable_check))
+    checks.append(_safe_check("port", f"控制台 Port {PORT}", _port_check))
+    checks.append(_safe_check("codex", "Codex CLI", _codex_check))
+    checks.append(_safe_check(
+        "start_bat",
+        "Windows 啟動檔",
+        lambda: _file_check("start_bat", "Windows 啟動檔", os.path.join(ROOT, "start.bat"), True),
+    ))
 
     local_config = os.path.join(ROOT, "config", "local.json")
     if os.path.isfile(local_config):
@@ -257,20 +287,42 @@ def build_diagnostics() -> dict:
         checks.append(_check("warn", "local_config", "本機設定檔", "尚未建立 config/local.json",
                              "路徑不一致時可由 config.example.json 複製建立"))
 
-    ld_ok = adb.available("ldplayer")
-    bs_ok = adb.available("bluestacks")
-    checks.append(_file_check("ldconsole", "LDPlayer ldconsole", adb.LDCONSOLE))
-    checks.append(_file_check("ld_adb", "LDPlayer ADB", adb.ADB))
-    checks.append(_file_check("bs_player", "BlueStacks Player", adb.BLUESTACKS_PLAYER))
-    checks.append(_file_check("bs_adb", "BlueStacks ADB", adb.BLUESTACKS_ADB))
-    checks.append(_check(
-        "ok" if (ld_ok or bs_ok) else "warn",
-        "emulator_backend",
-        "模擬器 ADB 後端",
-        f"LDPlayer: {'可用' if ld_ok else '未偵測'}；BlueStacks: {'可用' if bs_ok else '未偵測'}",
-        "" if (ld_ok or bs_ok) else "安裝模擬器或在 config/local.json 設定路徑",
+    ld_ok = False
+    bs_ok = False
+    checks.append(_safe_check(
+        "ldconsole", "LDPlayer ldconsole",
+        lambda: _file_check("ldconsole", "LDPlayer ldconsole", adb.LDCONSOLE),
     ))
-    checks.append(_job_status_check())
+    checks.append(_safe_check(
+        "ld_adb", "LDPlayer ADB",
+        lambda: _file_check("ld_adb", "LDPlayer ADB", adb.ADB),
+    ))
+    checks.append(_safe_check(
+        "bs_player", "BlueStacks Player",
+        lambda: _file_check("bs_player", "BlueStacks Player", adb.BLUESTACKS_PLAYER),
+    ))
+    checks.append(_safe_check(
+        "bs_adb", "BlueStacks ADB",
+        lambda: _file_check("bs_adb", "BlueStacks ADB", adb.BLUESTACKS_ADB),
+    ))
+    try:
+        ld_ok = adb.available("ldplayer")
+        bs_ok = adb.available("bluestacks")
+        checks.append(_check(
+            "ok" if (ld_ok or bs_ok) else "warn",
+            "emulator_backend",
+            "模擬器 ADB 後端",
+            f"LDPlayer: {'可用' if ld_ok else '未偵測'}；BlueStacks: {'可用' if bs_ok else '未偵測'}",
+            "" if (ld_ok or bs_ok) else "安裝模擬器或在 config/local.json 設定路徑",
+        ))
+    except Exception as e:
+        _log_diagnostics_error("模擬器 ADB 後端", e)
+        checks.append(_check(
+            "fail", "emulator_backend", "模擬器 ADB 後端",
+            f"偵測失敗：{type(e).__name__}: {e}",
+            "請查看 data/logs/diagnostics.err.log",
+        ))
+    checks.append(_safe_check("jobs", "任務佇列狀態", _job_status_check))
 
     counts = {"ok": 0, "warn": 0, "fail": 0, "info": 0}
     for c in checks:
@@ -287,6 +339,35 @@ def build_diagnostics() -> dict:
         "summary": {"status": status, "counts": counts},
         "checks": checks,
         "logs": _recent_logs(),
+    }
+
+
+def build_diagnostics_failure(exc: BaseException) -> dict:
+    _log_diagnostics_error("diagnostics endpoint", exc)
+    checks = [
+        _check(
+            "fail",
+            "diagnostics_endpoint",
+            "診斷端點執行失敗",
+            f"{type(exc).__name__}: {exc}",
+            "請重新啟動控制台；若仍發生，請查看 data/logs/diagnostics.err.log",
+        )
+    ]
+    try:
+        logs = _recent_logs()
+    except Exception:
+        logs = []
+    return {
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "project": ROOT,
+        "system": {
+            "platform": py_platform.platform(),
+            "python": sys.version.split()[0],
+            "executable": sys.executable,
+        },
+        "summary": {"status": "fail", "counts": {"ok": 0, "warn": 0, "fail": 1, "info": 0}},
+        "checks": checks,
+        "logs": logs,
     }
 
 
@@ -362,7 +443,10 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/schedules":
             return self._json({"schedules": store.list_schedules()})
         if p == "/api/diagnostics":
-            return self._json(build_diagnostics())
+            try:
+                return self._json(build_diagnostics())
+            except Exception as e:
+                return self._json(build_diagnostics_failure(e), status=200)
         m = re.match(r"^/api/jobs/([^/]+)$", p)
         if m:
             detail = job_detail(m.group(1))
