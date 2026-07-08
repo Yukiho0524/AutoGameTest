@@ -1,4 +1,4 @@
-"""Build or update a game's Skill file with Claude -> Codex fallback."""
+"""Build or update a game's Skill file with Codex."""
 from __future__ import annotations
 
 import argparse
@@ -103,7 +103,7 @@ def _summarize_attempts(attempts: list[dict]) -> list[dict]:
 
 
 def run_learn(game_id: str, sources: list[str] | None = None, job_id: str | None = None,
-              engine: str = "auto", fallback: bool = True, timeout: int = 1200) -> dict:
+              engine: str = "codex", fallback: bool = False, timeout: int = 1200) -> dict:
     game = store.get_game(game_id)
     if not game:
         return {"ok": False, "error": f"遊戲不存在: {game_id}"}
@@ -147,7 +147,7 @@ def run_learn(game_id: str, sources: list[str] | None = None, job_id: str | None
             job_id,
             status=status,
             engine_used=result.get("engine_used"),
-            fallback_reason=result.get("reason", ""),
+            run_reason=result.get("reason", ""),
             attempts=_summarize_attempts(result.get("attempts", [])),
             result=message,
             error_trace=(result.get("traceback") or "")[:4000] or None,
@@ -160,8 +160,7 @@ def main(argv=None) -> int:
     ap.add_argument("--game", help="game id")
     ap.add_argument("--sources", nargs="*", default=None)
     ap.add_argument("--job", help="process queued learn job")
-    ap.add_argument("--engine", choices=["auto", "claude", "codex"], default="auto")
-    ap.add_argument("--no-fallback", action="store_true")
+    ap.add_argument("--engine", choices=["auto", "codex"], default="codex")
     ap.add_argument("--timeout", type=int, default=1200)
     args = ap.parse_args(argv)
 
@@ -185,7 +184,7 @@ def main(argv=None) -> int:
         sources=sources,
         job_id=args.job,
         engine=args.engine,
-        fallback=not args.no_fallback,
+        fallback=False,
         timeout=args.timeout,
     )
     print(result.get("result") or result.get("output") or result.get("error", ""))
@@ -194,4 +193,3 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

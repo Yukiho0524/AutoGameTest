@@ -151,7 +151,7 @@ $("#game-form").onsubmit = async (e) => {
   if (autoLearn) {
     const job = await api(`/api/games/${saved.id}/learn`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sources: learnSources, engine: "auto" }),
+      body: JSON.stringify({ sources: learnSources, engine: "codex" }),
     });
     learnMsg = job.spawned ? `，已開始學習任務 #${job.id}` : `，但學習任務 #${job.id} 未能自動啟動`;
   }
@@ -177,7 +177,7 @@ $("#learn-btn").onclick = async () => {
   if (!gid) { alert("請先儲存遊戲再學習"); return; }
   const job = await api(`/api/games/${gid}/learn`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sources, engine: "auto" }),
+    body: JSON.stringify({ sources, engine: "codex" }),
   });
   $("#learn-status").textContent = job.spawned
     ? `已開始學習任務 #${job.id}。完成後會更新該遊戲的 Skill。`
@@ -382,10 +382,10 @@ function editAgent(a) {
 async function runAgent(id) {
   const job = await api(`/api/agents/${id}/run`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ engine: "auto" }),
+    body: JSON.stringify({ engine: "codex" }),
   });
   const msg = job.spawned
-    ? `已開始執行任務 #${job.id}（先用 Claude，額度用完自動切 Codex）。\n進度與使用引擎會顯示在「任務佇列」分頁。`
+    ? `已開始執行任務 #${job.id}（使用 Codex）。\n進度與使用引擎會顯示在「任務佇列」分頁。`
     : `已建立任務 #${job.id}，但無法自動啟動執行器。可在終端手動跑：python tools/run_agent.py --job ${job.id}`;
   alert(msg);
   loadJobs();

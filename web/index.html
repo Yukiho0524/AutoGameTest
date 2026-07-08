@@ -151,7 +151,7 @@
             <textarea name="prompt" rows="5" required
               placeholder="你是一位遊戲玩家，請去遊戲中幫我達成…"></textarea>
           </label>
-          <p class="hint">Agent 只能操作所綁定的遊戲。按「執行」立即在背景跑（Claude 優先，額度用完自動切 Codex），結果在任務佇列回報。</p>
+          <p class="hint">Agent 只能操作所綁定的遊戲。按「執行」立即用 Codex 在背景跑，結果在任務佇列回報。</p>
           <div class="actions">
             <button type="submit" class="primary">儲存 Agent</button>
             <button type="button" id="agent-reset">清空</button>
@@ -164,7 +164,7 @@
   <!-- ===== 任務佇列 ===== -->
   <section id="jobs" class="panel">
     <h2>任務佇列</h2>
-    <p class="hint">「學習」與「執行 Agent」都會立即在背景執行（先用 Claude，額度用完自動切 Codex），完成後這裡顯示狀態與使用的引擎。</p>
+    <p class="hint">「學習」與「執行 Agent」都會立即用 Codex 在背景執行，完成後這裡顯示狀態與使用的引擎。</p>
     <div class="control-bar">
       <button id="jobs-refresh">重新整理</button>
       <button id="jobs-clear-finished">清除已完成</button>

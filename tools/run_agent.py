@@ -1,15 +1,12 @@
-"""Run an AutoGameTest game agent, with automatic Claude -> Codex fallback.
+"""Run an AutoGameTest game agent with Codex.
 
-This is the agent-level version of ai_runner: when running an agent through
-Claude fails because the quota is exhausted, the same agent task is re-run
-through Codex. It works by composing a fully self-contained prompt (persona +
-skill knowledge + control cheatsheet + task) so that EITHER engine can execute
-it without the interactive session's context.
+This composes a fully self-contained prompt (persona + skill knowledge +
+control cheatsheet + task) and executes it through Codex CLI.
 
 Emulator (ADB) agents are the sweet spot: every control action is a shell
-command (adb tap / screencap), which both Claude Code headless and Codex exec
-can run. Desktop (computer-use) agents can't be driven headless the same way --
-see the caveat printed for them.
+command (adb tap / screencap), which Codex exec can run. Desktop
+(computer-use) agents can't be driven headless the same way -- see the caveat
+printed for them.
 
 Usage:
     python tools/run_agent.py --agent masterduel-daily
@@ -119,7 +116,7 @@ computer-use 應用名稱「{cu}」。
 
 
 def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
-              engine="auto", fallback=True, timeout=1200,
+              engine="codex", fallback=False, timeout=1200,
               print_only=False) -> dict:
     if agent_id:
         agent = store.get_agent(agent_id)
@@ -164,7 +161,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             job_id,
             status="done" if result.get("ok") else "error",
             engine_used=result.get("engine_used"),
-            fallback_reason=result.get("reason", ""),
+            run_reason=result.get("reason", ""),
             attempts=_summarize_attempts(result.get("attempts", [])),
             result=_format_job_result(result),
             error_trace=(result.get("traceback") or "")[:4000] or None)
@@ -172,13 +169,12 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Run a game agent with Claude->Codex fallback")
+    ap = argparse.ArgumentParser(description="Run a game agent with Codex")
     ap.add_argument("--agent", help="agent id")
     ap.add_argument("--game", help="game id (用 --task 搭配)")
     ap.add_argument("--task", help="任務內容（覆蓋 agent 預設 prompt）")
     ap.add_argument("--job", help="處理指定 job id 並回寫狀態")
-    ap.add_argument("--engine", choices=["auto", "claude", "codex"], default="auto")
-    ap.add_argument("--no-fallback", action="store_true")
+    ap.add_argument("--engine", choices=["auto", "codex"], default="codex")
     ap.add_argument("--timeout", type=int, default=1200)
     ap.add_argument("--print-prompt", action="store_true", help="只組裝並印出 prompt，不執行")
     args = ap.parse_args(argv)
@@ -194,7 +190,7 @@ def main(argv=None):
         task = task or p.get("prompt") or p.get("task")
 
     res = run_agent(agent_id=agent_id, game_id=game_id, task=task, job_id=args.job,
-                    engine=args.engine, fallback=not args.no_fallback,
+                    engine=args.engine, fallback=False,
                     timeout=args.timeout, print_only=args.print_prompt)
 
     if args.print_prompt and res.get("ok"):

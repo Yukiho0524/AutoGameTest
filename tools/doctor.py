@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import socket
-import subprocess
 import sys
 from shutil import which
 
@@ -70,15 +69,15 @@ def check_port(host: str = "127.0.0.1", port: int = 8777) -> bool:
     return True
 
 
-def check_cli(label: str, path: str | None, fallback_name: str) -> bool:
+def check_cli(label: str, path: str | None, executable_name: str) -> bool:
     if path and os.path.isfile(path):
         ok(f"{label}: {path}")
         return True
-    found = which(fallback_name)
+    found = which(executable_name)
     if found:
         ok(f"{label}: {found}")
         return True
-    warn(f"{label}: not found; related AI fallback may not work")
+    warn(f"{label}: not found; AI tasks will not run")
     return False
 
 
@@ -110,7 +109,6 @@ def main() -> int:
         from tools import ai_runner
     except ImportError:
         import ai_runner  # type: ignore
-    check_cli("Claude Code", ai_runner.find_claude(), "claude")
     check_cli("Codex CLI", ai_runner.find_codex(), "codex")
 
     print()
@@ -123,4 +121,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

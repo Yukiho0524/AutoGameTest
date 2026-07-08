@@ -12,7 +12,7 @@
 start.bat
 ```
 
-`start.bat` 會先執行 `tools/doctor.py` 檢查 Python、資料夾寫入權限、8777 port、LDPlayer/ADB、Claude Code、Codex CLI 等環境狀態，再啟動控制台。
+`start.bat` 會先執行 `tools/doctor.py` 檢查 Python、資料夾寫入權限、8777 port、LDPlayer/ADB、Codex CLI 等環境狀態，再啟動控制台。
 
 如果每台電腦的軟體安裝位置不同，請複製 `config.example.json` 成 `config/local.json`，填入本機路徑。例如：
 
@@ -21,12 +21,11 @@ start.bat
   "ldplayer_dir": "D:\\LDPlayer\\LDPlayer9",
   "ldconsole_path": "",
   "adb_path": "",
-  "claude_path": "",
   "codex_path": ""
 }
 ```
 
-也可以用環境變數覆寫：`AUTOGAMETEST_LDPLAYER_DIR`、`AUTOGAMETEST_LDCONSOLE_PATH`、`AUTOGAMETEST_ADB_PATH`、`AUTOGAMETEST_CLAUDE_PATH`、`AUTOGAMETEST_CODEX_PATH`。
+也可以用環境變數覆寫：`AUTOGAMETEST_LDPLAYER_DIR`、`AUTOGAMETEST_LDCONSOLE_PATH`、`AUTOGAMETEST_ADB_PATH`、`AUTOGAMETEST_CODEX_PATH`。
 
 開發時也可直接啟動：
 
@@ -74,17 +73,17 @@ web/
   index.html app.js style.css   # 前端
 data/
   games.json           # 遊戲與 agent 設定（單一事實來源）
-  jobs/                # 學習/執行任務（交給 Claude Code 處理）
-.claude/
+  jobs/                # 學習/執行任務狀態
+.codex/
   skills/<遊戲名>/SKILL.md    # 遊戲知識庫
   agents/<遊戲名>-player.md   # 綁定該遊戲的代打 agent
 ```
 
 ## AI 認知任務如何執行（learn / run_agent）
 
-機械操作由 Python 控制台處理；**遊戲認知（學習、代打）由 Claude Code 執行**。
+機械操作由 Python 控制台處理；**遊戲認知（學習、代打）由 Codex 執行**。
 控制台的「學習」「執行 Agent」按鈕會在 `data/jobs/` 寫入任務檔，並立即背景執行：
-1. learn：由 `tools/run_learn.py` 讀取遊戲設定與 `sources`，必要時請 AI 自行搜尋公開網路資料，生成/更新 `.claude/skills/<遊戲>/SKILL.md`
+1. learn：由 `tools/run_learn.py` 讀取遊戲設定與 `sources`，必要時請 AI 自行搜尋公開網路資料，生成/更新 `.codex/skills/<遊戲>/SKILL.md`
 2. run_agent：由 `tools/run_agent.py` 載入該遊戲 skill + agent → 依控制模式操作遊戲 → 完成後回報
 3. 任務檔會標記 `running` / `done` / `error`，並填入 `result`、`engine_used`、`attempts`
 
@@ -96,45 +95,35 @@ data/
 
 注意：目前排程依賴 `server.py` 正在執行；若電腦關機或控制台未開，該時段不會補跑。
 
-## AI 引擎自動切換（Claude 額度用完 → Codex）
+## AI 引擎（Codex）
 
-`tools/ai_runner.py`：跑 AI 任務時先用 Claude Code，偵測到**額度/用量上限**錯誤就自動改用 Codex CLI，回傳先成功的結果。
+`tools/ai_runner.py`：跑 AI 任務時直接使用 Codex CLI。
 
 ```bash
 python tools/ai_runner.py "你的提示"
-python tools/ai_runner.py --engine codex "強制用 codex"
-python tools/ai_runner.py --no-fallback "只用 claude"
 # PowerShell 方便包裝：
 .\tools\ai.ps1 "你的提示"
 ```
 
-答案印到 stdout，引擎/切換摘要印到 stderr（不干擾管線）。切換規則：
-- Claude 成功 → 用 Claude
-- Claude 因**額度用完**失敗（或找不到 claude.exe）→ 自動切 Codex
-- Claude 因**其他原因**失敗（程式錯誤等）→ **不切**，避免白白消耗 Codex 額度
-- `--no-fallback` → 只用 Claude
+答案印到 stdout，執行摘要印到 stderr（不干擾管線）。
 
-**⚠️ 重要限制**：這是「外部包裝器」，只對**腳本化的一次性提示**有效。它**無法**讓你正在進行的**互動式 Claude Code 對話**在額度用完時無縫轉到 Codex——因為那個 session 的上下文與 MCP 工具（computer-use、模擬器操控等）不會轉移到 Codex。原因是「額度用完」時停擺的正是 Claude Code 本身，沒辦法由它自己在斷點反應。互動對話要接續，仍需你手動開 Codex。
+引擎路徑自動偵測（不需寫死）：Codex 取 `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe` 或 Windows Apps 裡的 Codex CLI。也可用 `config/local.json` 的 `codex_path` 或環境變數 `AUTOGAMETEST_CODEX_PATH` 覆寫。
 
-引擎路徑自動偵測（不需寫死）：Claude 取 `%APPDATA%\Claude\claude-code\*\claude.exe` 最新版；Codex 取 `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe`。
+### 跑 Agent
 
-### 跑 Agent 時的自動切換（跑不動就改 Codex）
-
-`tools/run_agent.py` 把上面的切換接進**代打 agent 執行**：跑 agent 時先用 Claude，額度用完就自動改用 Codex 跑同一個 agent。做法是把「角色 persona + 遊戲 skill 知識 + 操作指令表 + 任務」組成一份**自足 prompt**，讓兩個引擎誰接手都能執行。
+`tools/run_agent.py` 會把「角色 persona + 遊戲 skill 知識 + 操作指令表 + 任務」組成一份自足 prompt，交給 Codex 執行。
 
 ```bash
-python tools/run_agent.py --agent masterduel-daily          # 自動 fallback
+python tools/run_agent.py --agent masterduel-daily
 python tools/run_agent.py --game gget --task "完成每日任務"   # 用遊戲+任務
-python tools/run_agent.py --agent <id> --engine codex        # 強制 Codex
 python tools/run_agent.py --job <job_id>                     # 處理佇列任務並回寫狀態
 python tools/run_agent.py --agent <id> --print-prompt        # 只看組出的 prompt
 ```
 
-控制台按 Agent 的「執行」＝立即在背景跑這支（先 Claude → 額度用完切 Codex），結果與使用引擎顯示在「任務佇列」。
+控制台按 Agent 的「執行」＝立即在背景跑這支，結果與使用引擎顯示在「任務佇列」。
 
-- **模擬器（ADB）agent 最適合 Codex 接手**：操作全是 `adb ... input tap` 之類 shell 指令，Claude headless 與 Codex exec 都能跑（模擬器 agent 用 `danger-full-access` sandbox 讓 Codex 能呼叫 adb）。
+- **模擬器（ADB）agent 最適合**：操作全是 `adb ... input tap` 之類 shell 指令，模擬器 agent 用 `danger-full-access` sandbox 讓 Codex 能呼叫 adb。
 - **桌面（computer-use）agent 的限制**：headless / Codex 環境通常沒有 computer-use 工具，prompt 已指示「若無 computer-use 能力就回報需在互動 session 執行」，不會盲操作。這類 agent 仍建議在有 computer-use 的互動 session 跑。
-- 視覺理解注意：靠即時截圖判讀畫面的 agent，Codex 的 exec 視覺支援不如 Claude；步驟越確定（skill 已記錄固定座標）越適合 Codex 接手。
 
 ## 學習迴圈（降低誤差的核心）
 

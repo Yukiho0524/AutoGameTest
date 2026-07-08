@@ -1,6 +1,4 @@
-"""JSON-backed store for games and agents. Also writes/reads the skill and
-agent markdown files under .claude/ so the UI and Claude Code share one source
-of truth."""
+"""JSON-backed store for games, agents, skills, jobs, and schedules."""
 from __future__ import annotations
 
 import json
@@ -13,8 +11,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_FILE = os.path.join(ROOT, "data", "games.json")
 JOBS_DIR = os.path.join(ROOT, "data", "jobs")
 SCHEDULES_FILE = os.path.join(ROOT, "data", "schedules.json")
-SKILLS_DIR = os.path.join(ROOT, ".claude", "skills")
-AGENTS_DIR = os.path.join(ROOT, ".claude", "agents")
+SKILLS_DIR = os.path.join(ROOT, ".codex", "skills")
+AGENTS_DIR = os.path.join(ROOT, ".codex", "agents")
 
 _lock = threading.Lock()
 
@@ -63,8 +61,8 @@ def upsert_game(game: dict) -> dict:
                 gid = f"{base}-{n}"; n += 1
         game["id"] = gid
         game.setdefault("created", date.today().isoformat())
-        game.setdefault("skill_path", f".claude/skills/{gid}/SKILL.md")
-        game.setdefault("agent_path", f".claude/agents/{gid}-player.md")
+        game.setdefault("skill_path", f".codex/skills/{gid}/SKILL.md")
+        game.setdefault("agent_path", f".codex/agents/{gid}-player.md")
         game.setdefault("verified", False)
 
         for i, g in enumerate(data["games"]):
@@ -139,16 +137,15 @@ def write_skill(game_id: str, content: str) -> None:
     g = get_game(game_id)
     if not g:
         return
-    path = os.path.join(ROOT, g.get("skill_path", f".claude/skills/{game_id}/SKILL.md"))
+    path = os.path.join(ROOT, g.get("skill_path", f".codex/skills/{game_id}/SKILL.md"))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
 
 
-# ---------------- jobs (handoff to Claude Code) ----------------
-# Learning a game and running an agent require AI cognition, which Claude Code
-# performs -- not this Python process. The UI enqueues a job file describing the
-# task; Claude Code picks it up, does the work, and marks it done.
+# ---------------- jobs ----------------
+# Learning a game and running an agent require AI cognition. The UI enqueues a
+# job file, then a Codex-backed runner processes it and marks it done.
 
 def enqueue_job(kind: str, payload: dict) -> dict:
     os.makedirs(JOBS_DIR, exist_ok=True)

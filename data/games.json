@@ -11,8 +11,8 @@
         "instance": 0,
         "serial": "emulator-5554"
       },
-      "skill_path": ".claude/skills/gget/SKILL.md",
-      "agent_path": ".claude/agents/gget-player.md",
+      "skill_path": ".codex/skills/gget/SKILL.md",
+      "agent_path": ".codex/agents/gget-player.md",
       "learn_sources": [],
       "verified": false,
       "created": "2026-07-08"

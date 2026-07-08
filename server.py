@@ -3,8 +3,8 @@
 Run:  python server.py     then open  http://127.0.0.1:8777
 
 The server handles all *mechanical* work: game config, platform detection,
-launching, and live emulator control (screenshot + tap). AI *cognition* (learning
-a game, playing as an agent) is handed off to Claude Code via job files.
+launching, and live emulator control (screenshot + tap). AI cognition
+(learning a game, playing as an agent) is executed through Codex job runners.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ HOST, PORT = "127.0.0.1", 8777
 _scheduler_started = False
 
 
-def spawn_runner(script_name: str, job_id: str, engine: str = "auto") -> bool:
+def spawn_runner(script_name: str, job_id: str, engine: str = "codex") -> bool:
     runner = os.path.join(ROOT, "tools", script_name)
     if not os.path.isfile(runner):
         return False
@@ -57,7 +57,7 @@ def spawn_runner(script_name: str, job_id: str, engine: str = "auto") -> bool:
 
 def enqueue_agent_run(agent: dict, source: str = "manual",
                       schedule: dict | None = None,
-                      engine: str = "auto") -> dict:
+                      engine: str = "codex") -> dict:
     payload = {
         "agent_id": agent["id"],
         "game_id": agent.get("game_id"),
@@ -224,7 +224,7 @@ class Handler(BaseHTTPRequestHandler):
                 "game_id": m.group(1),
                 "sources": b.get("sources", []),
             })
-            mode = (b or {}).get("engine", "auto")
+            mode = (b or {}).get("engine", "codex")
             spawned = spawn_runner("run_learn.py", job["id"], mode)
             job["spawned"] = spawned
             if not spawned:
@@ -238,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
             a = next((x for x in store.list_agents() if x["id"] == m.group(1)), None)
             if not a:
                 return self.send_error(404)
-            mode = (b or {}).get("engine", "auto")
+            mode = (b or {}).get("engine", "codex")
             return self._json(enqueue_agent_run(a, engine=mode))
         return self.send_error(404)
 
