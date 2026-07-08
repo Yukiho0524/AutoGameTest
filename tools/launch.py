@@ -6,15 +6,19 @@ all environment checks, browser opening, and readable error handling live here.
 from __future__ import annotations
 
 import os
+import json
 import socket
 import subprocess
 import sys
 import time
 import traceback
+import urllib.error
+import urllib.request
 import webbrowser
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 URL = "http://127.0.0.1:8777"
+DIAGNOSTICS_URL = URL + "/api/diagnostics"
 LOG_FILE = os.path.join(ROOT, "data", "logs", "startup.log")
 CREATE_NO_WINDOW = 0x08000000
 
@@ -36,6 +40,117 @@ def port_open(host: str = "127.0.0.1", port: int = 8777) -> bool:
         return sock.connect_ex((host, port)) == 0
     finally:
         sock.close()
+
+
+def diagnostics_ready() -> tuple[bool, str]:
+    req = urllib.request.Request(
+        DIAGNOSTICS_URL,
+        headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            text = resp.read(200000).decode("utf-8", "replace")
+            data = json.loads(text)
+    except urllib.error.HTTPError as e:
+        return False, f"HTTP {e.code} from {DIAGNOSTICS_URL}"
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as e:
+        return False, f"{type(e).__name__}: {e}"
+    if isinstance(data, dict) and isinstance(data.get("checks"), list):
+        return True, "diagnostics API is ready"
+    return False, "diagnostics API returned unexpected JSON"
+
+
+def pids_listening_on_port(port: int = 8777) -> list[int]:
+    try:
+        proc = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=5,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except Exception:
+        return []
+    pids: list[int] = []
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        proto, local, _remote, state, pid = parts[:5]
+        if proto.upper() != "TCP" or state.upper() != "LISTENING":
+            continue
+        if not local.endswith(f":{port}"):
+            continue
+        try:
+            value = int(pid)
+        except ValueError:
+            continue
+        if value not in pids:
+            pids.append(value)
+    return pids
+
+
+def process_command_line(pid: int) -> str:
+    ps = (
+        "try { "
+        f"(Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\").CommandLine "
+        "} catch { '' }"
+    )
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=5,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except Exception:
+        return ""
+    return (proc.stdout or "").strip()
+
+
+def looks_like_autogametest_server(command_line: str) -> bool:
+    text = (command_line or "").lower()
+    root = ROOT.lower()
+    normalized = text.replace('"', "").strip()
+    relative_server_py = normalized.endswith(" server.py") or normalized == "server.py"
+    return (
+        "server.py" in text
+        and ("python" in text or "py.exe" in text or "py " in text)
+        and ("autogametest" in text or root in text or relative_server_py)
+    )
+
+
+def stop_stale_server() -> bool:
+    stopped = False
+    for pid in pids_listening_on_port(8777):
+        cmd = process_command_line(pid)
+        log(f"[AutoGameTest] Port 8777 is owned by PID {pid}: {cmd or '(unknown command line)'}")
+        if not looks_like_autogametest_server(cmd):
+            log("[AutoGameTest] Existing process does not look like AutoGameTest server.py; leaving it alone.")
+            continue
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/F"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                creationflags=CREATE_NO_WINDOW,
+            )
+            stopped = True
+            log(f"[AutoGameTest] Stopped stale AutoGameTest server PID {pid}.")
+        except Exception as e:
+            log(f"[AutoGameTest] Failed to stop PID {pid}: {e}")
+    if stopped:
+        for _ in range(20):
+            if not port_open():
+                return True
+            time.sleep(0.2)
+    return stopped and not port_open()
 
 
 def run_doctor() -> int:
@@ -66,10 +181,19 @@ def main() -> int:
         return rc
 
     if port_open():
+        ready, detail = diagnostics_ready()
         log("")
-        log(f"[AutoGameTest] Control panel already appears to be running: {URL}")
-        open_browser()
-        return 0
+        if ready:
+            log(f"[AutoGameTest] Control panel already appears to be running: {URL}")
+            open_browser()
+            return 0
+        log("[AutoGameTest] Port 8777 is occupied, but the running server is not compatible with this version.")
+        log(f"[AutoGameTest] Health check failed: {detail}")
+        log("[AutoGameTest] Trying to stop stale server.py and start the latest version...")
+        if not stop_stale_server():
+            log("[ERROR] Could not stop the process using port 8777.")
+            log("[ERROR] Close the old AutoGameTest/python window or reboot, then run start.bat again.")
+            return 1
 
     log("")
     log("[AutoGameTest] Starting control panel...")
@@ -88,10 +212,13 @@ def main() -> int:
             log(f"[ERROR] Run manually for details: {sys.executable} server.py")
             log(f"[ERROR] Startup log: {LOG_FILE}")
             return proc.returncode or 1
-        if port_open():
+        ready, detail = diagnostics_ready() if port_open() else (False, "port not open")
+        if ready:
             log(f"[AutoGameTest] Control panel is ready: {URL}")
             open_browser()
             return 0
+        if port_open():
+            log(f"[AutoGameTest] Waiting for diagnostics API: {detail}")
         time.sleep(0.2)
 
     log("[ERROR] server.py did not become ready within 6 seconds.")
@@ -101,4 +228,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
