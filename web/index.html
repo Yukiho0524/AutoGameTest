@@ -18,6 +18,7 @@
     <button class="tab" data-tab="agents">Agent</button>
     <button class="tab" data-tab="jobs">任務佇列</button>
     <button class="tab" data-tab="schedule">排程表</button>
+    <button class="tab" data-tab="diagnostics">診斷</button>
   </nav>
 
   <!-- ===== 遊戲庫 ===== -->
@@ -177,7 +178,29 @@
       <button id="jobs-clear-all" class="danger">全部清除</button>
       <span class="hint">「全部清除」不會刪除執行中(running)的任務，避免中斷進行中的代打。</span>
     </div>
-    <div id="job-list" class="cards"></div>
+    <div class="jobs-layout">
+      <div id="job-list" class="cards"></div>
+      <aside class="job-detail">
+        <div class="detail-head">
+          <h3 id="job-detail-title">任務詳情</h3>
+          <button id="job-detail-refresh" class="small">刷新</button>
+        </div>
+        <p class="hint" id="job-detail-empty">尚未選擇任務。</p>
+        <div id="job-detail-body" hidden>
+          <div id="job-detail-meta" class="detail-meta"></div>
+          <h4>Payload</h4>
+          <pre id="job-payload" class="log-box"></pre>
+          <h4>結果</h4>
+          <pre id="job-result" class="log-box"></pre>
+          <h4>stdout</h4>
+          <div id="job-stdout-meta" class="log-meta"></div>
+          <pre id="job-stdout" class="log-box"></pre>
+          <h4>stderr</h4>
+          <div id="job-stderr-meta" class="log-meta"></div>
+          <pre id="job-stderr" class="log-box"></pre>
+        </div>
+      </aside>
+    </div>
   </section>
 
   <!-- ===== 排程表 ===== -->
@@ -199,6 +222,24 @@
       </aside>
     </div>
     <p class="hint" id="schedule-status"></p>
+  </section>
+
+  <!-- ===== 診斷 ===== -->
+  <section id="diagnostics" class="panel">
+    <div class="schedule-head">
+      <h2>環境自檢 / 診斷</h2>
+      <div class="actions">
+        <button id="diagnostics-refresh" class="primary">重新檢查</button>
+      </div>
+    </div>
+    <div id="diagnostics-summary" class="diagnostics-summary"></div>
+    <div class="diagnostics-layout">
+      <div id="diagnostics-list" class="cards"></div>
+      <aside class="diagnostics-side">
+        <h3>最近 Log</h3>
+        <div id="diagnostics-logs" class="log-file-list"></div>
+      </aside>
+    </div>
   </section>
 
   <script src="app.js"></script>

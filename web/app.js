@@ -10,6 +10,7 @@ const api = async (path, opts) => {
 let GAMES = [];
 let AGENTS = [];
 let SCHEDULES = [];
+let SELECTED_JOB_ID = null;
 const DAYS = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"];
 
 // ---------- tabs ----------
@@ -22,6 +23,7 @@ $$(".tab").forEach(t => t.onclick = () => {
   if (t.dataset.tab === "jobs") loadJobs();
   if (t.dataset.tab === "agents") loadAgents();
   if (t.dataset.tab === "schedule") loadSchedule();
+  if (t.dataset.tab === "diagnostics") loadDiagnostics();
 });
 
 // ---------- games ----------
@@ -435,36 +437,168 @@ async function loadJobs() {
   const { jobs } = await api("/api/jobs");
   const list = $("#job-list");
   list.innerHTML = jobs.length ? "" : '<p class="hint">目前沒有任務。</p>';
+  if (SELECTED_JOB_ID && !jobs.some(j => j.id === SELECTED_JOB_ID)) {
+    SELECTED_JOB_ID = null;
+    renderEmptyJobDetail();
+  }
   jobs.forEach(j => {
     const div = document.createElement("div");
-    div.className = "card";
+    div.className = `card job-card ${j.id === SELECTED_JOB_ID ? "selected" : ""}`;
+    div.dataset.jobId = j.id;
     div.innerHTML = `
       <h3>${j.kind === "learn" ? "📖 學習" : "🕹 執行 Agent"} <span class="badge">${j.status}</span></h3>
       <div class="meta">#${j.id} · ${esc(j.created)}</div>
       <p class="hint">${esc(JSON.stringify(j.payload))}</p>
       ${j.result ? `<p class="hint">結果：${esc(j.result)}</p>` : ""}
-      <div class="row"><button class="small danger" data-act="del">刪除</button></div>`;
+      <div class="row">
+        <button class="small" data-act="detail">詳情 / Log</button>
+        <button class="small danger" data-act="del">刪除</button>
+      </div>`;
+    div.querySelector('[data-act=detail]').onclick = () => loadJobDetail(j.id);
     div.querySelector('[data-act=del]').onclick = () => delJob(j.id);
+    div.onclick = (e) => {
+      if (e.target.closest("button")) return;
+      loadJobDetail(j.id);
+    };
     list.appendChild(div);
   });
+  if (!SELECTED_JOB_ID && jobs.length) {
+    loadJobDetail(jobs[0].id);
+  } else if (SELECTED_JOB_ID) {
+    loadJobDetail(SELECTED_JOB_ID);
+  }
 }
 
 async function delJob(id) {
   await api(`/api/jobs/${id}`, { method: "DELETE" });
+  if (SELECTED_JOB_ID === id) {
+    SELECTED_JOB_ID = null;
+    renderEmptyJobDetail();
+  }
   loadJobs();
 }
 $("#jobs-refresh").onclick = loadJobs;
 $("#jobs-clear-finished").onclick = async () => {
   const r = await api("/api/jobs?scope=finished", { method: "DELETE" });
   alert(`已清除 ${r.removed} 筆已完成/失敗的任務。`);
+  SELECTED_JOB_ID = null;
+  renderEmptyJobDetail();
   loadJobs();
 };
 $("#jobs-clear-all").onclick = async () => {
   if (!confirm("清除所有任務？（執行中的任務會保留）")) return;
   const r = await api("/api/jobs?scope=all", { method: "DELETE" });
   alert(`已清除 ${r.removed} 筆任務。`);
+  SELECTED_JOB_ID = null;
+  renderEmptyJobDetail();
   loadJobs();
 };
+
+$("#job-detail-refresh").onclick = () => {
+  if (SELECTED_JOB_ID) loadJobDetail(SELECTED_JOB_ID);
+};
+
+async function loadJobDetail(id) {
+  SELECTED_JOB_ID = id;
+  $$(".job-card").forEach(card => card.classList.toggle(
+    "selected", card.dataset.jobId === id));
+  const { job, logs } = await api(`/api/jobs/${encodeURIComponent(id)}`);
+  $("#job-detail-empty").hidden = true;
+  $("#job-detail-body").hidden = false;
+  $("#job-detail-title").textContent = `任務詳情 #${job.id}`;
+  $("#job-detail-meta").innerHTML = `
+    <span class="badge">${esc(job.kind)}</span>
+    <span class="badge">${esc(job.status)}</span>
+    <span>${esc(job.created || "")}</span>`;
+  $("#job-payload").textContent = formatJson(job.payload);
+  $("#job-result").textContent = job.result ? String(job.result) : "(尚無結果)";
+  renderLog("stdout", logs.stdout);
+  renderLog("stderr", logs.stderr);
+}
+
+function renderEmptyJobDetail() {
+  $("#job-detail-title").textContent = "任務詳情";
+  $("#job-detail-empty").hidden = false;
+  $("#job-detail-body").hidden = true;
+}
+
+function renderLog(kind, log) {
+  const meta = $(`#job-${kind}-meta`);
+  const box = $(`#job-${kind}`);
+  if (!log || !log.exists) {
+    meta.textContent = "尚無 log";
+    box.textContent = "";
+    return;
+  }
+  meta.textContent = `${log.path} · ${formatBytes(log.size)} · ${log.mtime}${log.truncated ? " · 已截斷" : ""}`;
+  box.textContent = log.tail || "(空白)";
+}
+
+// ---------- diagnostics ----------
+async function loadDiagnostics() {
+  $("#diagnostics-summary").innerHTML = '<span class="badge">checking</span>';
+  const data = await api("/api/diagnostics");
+  renderDiagnostics(data);
+}
+
+function renderDiagnostics(data) {
+  const summary = data.summary || { status: "unknown", counts: {} };
+  const counts = summary.counts || {};
+  $("#diagnostics-summary").innerHTML = `
+    <div class="summary-card status-${esc(summary.status)}">
+      <strong>${statusText(summary.status)}</strong>
+      <span>OK ${counts.ok || 0}</span>
+      <span>WARN ${counts.warn || 0}</span>
+      <span>FAIL ${counts.fail || 0}</span>
+      <small>${esc(data.generated_at || "")}</small>
+    </div>
+    <div class="summary-card">
+      <strong>Project</strong>
+      <span>${esc(data.project || "")}</span>
+      <small>${esc(data.system?.platform || "")}</small>
+    </div>`;
+
+  const list = $("#diagnostics-list");
+  list.innerHTML = "";
+  (data.checks || []).forEach(c => {
+    const div = document.createElement("div");
+    div.className = `card diagnostic-card status-${c.level}`;
+    div.innerHTML = `
+      <div class="diagnostic-title">
+        <h3>${esc(c.title)}</h3>
+        <span class="badge">${esc(c.level).toUpperCase()}</span>
+      </div>
+      <p>${esc(c.detail)}</p>
+      ${c.action ? `<p class="hint">${esc(c.action)}</p>` : ""}`;
+    list.appendChild(div);
+  });
+
+  const logs = $("#diagnostics-logs");
+  logs.innerHTML = (data.logs || []).length ? "" : '<p class="hint">尚無 log。</p>';
+  (data.logs || []).forEach(l => {
+    const div = document.createElement("div");
+    div.className = "log-file";
+    div.innerHTML = `<strong>${esc(l.name)}</strong><span>${esc(l.mtime)} · ${formatBytes(l.size)}</span>`;
+    logs.appendChild(div);
+  });
+}
+
+$("#diagnostics-refresh").onclick = loadDiagnostics;
+
+function statusText(status) {
+  return { ok: "環境正常", warn: "需要確認", fail: "需要修復" }[status] || status;
+}
+
+function formatJson(value) {
+  return JSON.stringify(value ?? null, null, 2);
+}
+
+function formatBytes(value) {
+  const n = Number(value || 0);
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c =>

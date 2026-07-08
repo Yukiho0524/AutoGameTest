@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import os
+import platform as py_platform
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -113,6 +115,194 @@ def start_scheduler() -> None:
     t.start()
 
 
+def _safe_log_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    full = os.path.abspath(path if os.path.isabs(path) else os.path.join(ROOT, path))
+    log_root = os.path.abspath(LOG_DIR)
+    try:
+        if os.path.commonpath([log_root, full]) != log_root:
+            return None
+    except ValueError:
+        return None
+    return full
+
+
+def _tail_log(path: str | None, limit: int = 40000) -> dict:
+    full = _safe_log_path(path)
+    info = {
+        "path": full or path or "",
+        "exists": False,
+        "size": 0,
+        "tail": "",
+        "truncated": False,
+        "mtime": "",
+    }
+    if not full or not os.path.isfile(full):
+        return info
+    size = os.path.getsize(full)
+    info["exists"] = True
+    info["size"] = size
+    info["mtime"] = datetime.fromtimestamp(os.path.getmtime(full)).strftime("%Y-%m-%d %H:%M:%S")
+    with open(full, "rb") as f:
+        if size > limit:
+            f.seek(-limit, os.SEEK_END)
+            info["truncated"] = True
+        data = f.read()
+    text = data.decode("utf-8", "replace")
+    if info["truncated"]:
+        text = "... log truncated; showing latest output ...\n" + text
+    info["tail"] = text
+    return info
+
+
+def _recent_logs(limit: int = 16) -> list[dict]:
+    if not os.path.isdir(LOG_DIR):
+        return []
+    rows = []
+    for name in os.listdir(LOG_DIR):
+        full = os.path.join(LOG_DIR, name)
+        if not os.path.isfile(full):
+            continue
+        rows.append({
+            "name": name,
+            "path": full,
+            "size": os.path.getsize(full),
+            "mtime": datetime.fromtimestamp(os.path.getmtime(full)).strftime("%Y-%m-%d %H:%M:%S"),
+        })
+    rows.sort(key=lambda x: x["mtime"], reverse=True)
+    return rows[:limit]
+
+
+def _check(level: str, key: str, title: str, detail: str, action: str = "") -> dict:
+    return {"level": level, "key": key, "title": title, "detail": detail, "action": action}
+
+
+def _file_check(key: str, title: str, path: str, required: bool = False) -> dict:
+    if path and os.path.isfile(path):
+        return _check("ok", key, title, path)
+    level = "fail" if required else "warn"
+    return _check(level, key, title, path or "未設定", "確認安裝位置或寫入 config/local.json")
+
+
+def _data_writable_check() -> dict:
+    data_dir = os.path.join(ROOT, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    probe = os.path.join(data_dir, ".diagnostic-write-test.tmp")
+    try:
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(probe)
+        return _check("ok", "data_writable", "資料目錄可寫入", data_dir)
+    except OSError as e:
+        return _check("fail", "data_writable", "資料目錄不可寫入", f"{data_dir} ({e})",
+                      "請確認專案資料夾權限")
+
+
+def _port_check() -> dict:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(0.5)
+        in_use = sock.connect_ex((HOST, PORT)) == 0
+    finally:
+        sock.close()
+    if in_use:
+        return _check("ok", "port", f"控制台 Port {PORT}", f"http://{HOST}:{PORT} 已啟用")
+    return _check("warn", "port", f"控制台 Port {PORT}", "目前未偵測到服務",
+                  "若頁面仍可操作，重新整理診斷即可")
+
+
+def _codex_check() -> dict:
+    try:
+        from tools import ai_runner
+        path = ai_runner.find_codex()
+    except Exception as e:
+        return _check("fail", "codex", "Codex CLI", f"偵測失敗：{e}",
+                      "安裝 Codex 或在 config/local.json 設定 codex_path")
+    if path and os.path.isfile(path):
+        return _check("ok", "codex", "Codex CLI", path)
+    return _check("fail", "codex", "Codex CLI", "找不到 codex.exe",
+                  "安裝 Codex 或在 config/local.json 設定 codex_path")
+
+
+def _job_status_check() -> dict:
+    counts: dict[str, int] = {}
+    for job in store.list_jobs():
+        status = str(job.get("status", "unknown"))
+        counts[status] = counts.get(status, 0) + 1
+    detail = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items())) or "沒有任務"
+    level = "warn" if counts.get("error") else "ok"
+    return _check(level, "jobs", "任務佇列狀態", detail)
+
+
+def build_diagnostics() -> dict:
+    checks = []
+    version = sys.version_info
+    checks.append(_check(
+        "ok" if version >= (3, 10) else "fail",
+        "python",
+        "Python 版本",
+        f"{version.major}.{version.minor}.{version.micro} ({sys.executable})",
+        "" if version >= (3, 10) else "請安裝 Python 3.10 以上並加入 PATH",
+    ))
+    checks.append(_data_writable_check())
+    checks.append(_port_check())
+    checks.append(_codex_check())
+    checks.append(_file_check("start_bat", "Windows 啟動檔", os.path.join(ROOT, "start.bat"), True))
+
+    local_config = os.path.join(ROOT, "config", "local.json")
+    if os.path.isfile(local_config):
+        checks.append(_check("ok", "local_config", "本機設定檔", local_config))
+    else:
+        checks.append(_check("warn", "local_config", "本機設定檔", "尚未建立 config/local.json",
+                             "路徑不一致時可由 config.example.json 複製建立"))
+
+    ld_ok = adb.available("ldplayer")
+    bs_ok = adb.available("bluestacks")
+    checks.append(_file_check("ldconsole", "LDPlayer ldconsole", adb.LDCONSOLE))
+    checks.append(_file_check("ld_adb", "LDPlayer ADB", adb.ADB))
+    checks.append(_file_check("bs_player", "BlueStacks Player", adb.BLUESTACKS_PLAYER))
+    checks.append(_file_check("bs_adb", "BlueStacks ADB", adb.BLUESTACKS_ADB))
+    checks.append(_check(
+        "ok" if (ld_ok or bs_ok) else "warn",
+        "emulator_backend",
+        "模擬器 ADB 後端",
+        f"LDPlayer: {'可用' if ld_ok else '未偵測'}；BlueStacks: {'可用' if bs_ok else '未偵測'}",
+        "" if (ld_ok or bs_ok) else "安裝模擬器或在 config/local.json 設定路徑",
+    ))
+    checks.append(_job_status_check())
+
+    counts = {"ok": 0, "warn": 0, "fail": 0, "info": 0}
+    for c in checks:
+        counts[c["level"]] = counts.get(c["level"], 0) + 1
+    status = "fail" if counts.get("fail") else "warn" if counts.get("warn") else "ok"
+    return {
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "project": ROOT,
+        "system": {
+            "platform": py_platform.platform(),
+            "python": sys.version.split()[0],
+            "executable": sys.executable,
+        },
+        "summary": {"status": status, "counts": counts},
+        "checks": checks,
+        "logs": _recent_logs(),
+    }
+
+
+def job_detail(job_id: str) -> dict | None:
+    job = store.get_job(job_id)
+    if not job:
+        return None
+    return {
+        "job": job,
+        "logs": {
+            "stdout": _tail_log(job.get("log_stdout")),
+            "stderr": _tail_log(job.get("log_stderr")),
+        },
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "AutoGameTest/0.1"
 
@@ -171,6 +361,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"jobs": store.list_jobs()})
         if p == "/api/schedules":
             return self._json({"schedules": store.list_schedules()})
+        if p == "/api/diagnostics":
+            return self._json(build_diagnostics())
+        m = re.match(r"^/api/jobs/([^/]+)$", p)
+        if m:
+            detail = job_detail(m.group(1))
+            if not detail:
+                return self.send_error(404)
+            return self._json(detail)
         if p == "/api/emulator/instances":
             emulator = q.get("emulator", [None])[0]
             return self._json({"available": adb.available(emulator),
