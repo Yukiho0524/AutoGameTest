@@ -40,6 +40,12 @@ except ImportError:
     yaml = None
 
 SCRIPT_ASSETS_DIR = os.path.join(ROOT, "data", "scripts", "assets")
+DEFAULT_SCRIPT_DEFAULTS = {
+    "visual_timeout": 60,
+    "until_timeout": 120,
+    "stable_timeout": 45,
+    "match_interval": 1.0,
+}
 
 # how far before the recorded tap time to grab the frame (screenrecord lag)
 FRAME_LAG = 0.45
@@ -190,7 +196,12 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 {template_lines}
 
 # 腳本 schema（你要輸出的格式）
-- 頂層欄位：`name`（腳本名）、`description`（這段流程在做什麼）、`steps`（動作序列）
+- 頂層欄位：`name`（腳本名）、`description`（這段流程在做什麼）、`defaults`（等待預設）、`steps`（動作序列）
+- defaults 建議固定輸出：
+  - `visual_timeout: 60`（tap_image/tap_scene 找模板最多等待秒數）
+  - `until_timeout: 120`（until / wait_scene 最多等待秒數）
+  - `stable_timeout: 45`（有 wait_after 的操作後，最多等待載入/轉場穩定秒數）
+  - `match_interval: 1.0`（圖片比對輪詢間隔）
 - steps 支援的 action：
   - `tap`：欄位 x, y（**必須直接取自對應 tap 的 nx/ny，不得自行估計**）
   - `tap_image`：欄位 image/template（使用上方模板路徑做圖片比對，找到後點擊模板中心），可加 threshold/timeout/region
@@ -206,7 +217,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 # 生成規則（比照 GameTestAi 的精神）
 1. 依 taps 時間順序轉成 steps；kind 對應 action（tap/long_press/swipe）。
 2. 若該 tap 有「已裁切模板」，穩定按鈕/圖示/可重複 UI 優先產生 `tap_image`，image/template 路徑必須照抄上方模板路徑；只有模板不穩或畫面過場才使用 `tap`。
-3. 重要步驟請加 `until` 驗證下一個畫面；容易誤點的步驟請加 `anchor` 或 `scene` 驗證目前畫面。
+3. 重要步驟請加 `until` 驗證下一個畫面；容易誤點的步驟請加 `anchor` 或 `scene` 驗證目前畫面；涉及遊戲啟動、下載、Loading、戰鬥結算或轉場，timeout/ until_timeout 請用 90~180 秒，不要太短。
 4. 兩次觸控的實際間隔反映成前一步的 `wait_after`（間隔近取 1~2 秒；有載入/轉場依畫面判斷加長，上限 90；不要把實測 30 秒以上的載入硬砍成 30）。
 5. 看截圖判斷：若某次觸控落在過場/載入畫面（畫面模糊、無穩定按鈕），該點很可能是使用者在等待時的無意義點擊——改成 `wait` 或 `wait_scene` 步驟並在 name 註明，不要保留成 tap。
 6. 每步命名要具體（看圖說出點的是什麼按鈕/區域），不要只寫「點擊」。
@@ -219,13 +230,19 @@ AUTOGAMETEST_SCRIPT_YAML:
 ```yaml
 name: ...
 description: ...
+defaults:
+  visual_timeout: 60
+  until_timeout: 120
+  stable_timeout: 45
+  match_interval: 1.0
 steps:
   - action: tap_image
     name: ...
     image: data/scripts/assets/.../templates/tap00_template.png
     threshold: 0.88
-    timeout: 12
+    timeout: 60
     until: data/scripts/assets/.../templates/tap01_template.png
+    until_timeout: 120
     wait_after: 2.0
 ```
 
@@ -320,6 +337,22 @@ def _copy_visual_fields(src: dict, dst: dict) -> None:
             dst[key] = clean
 
 
+def _clean_defaults(value) -> dict:
+    defaults = dict(DEFAULT_SCRIPT_DEFAULTS)
+    if not isinstance(value, dict):
+        return defaults
+    for key, fallback in DEFAULT_SCRIPT_DEFAULTS.items():
+        raw = value.get(key)
+        if isinstance(raw, (int, float)):
+            defaults[key] = max(0, raw)
+        else:
+            try:
+                defaults[key] = max(0, float(raw))
+            except (TypeError, ValueError):
+                defaults[key] = fallback
+    return defaults
+
+
 def sanitize_generated(data: dict, taps: list[dict], meta: dict) -> tuple[dict, str]:
     """Safety pass over Codex's output. Returns (clean_script, error).
 
@@ -411,6 +444,7 @@ def sanitize_generated(data: dict, taps: list[dict], meta: dict) -> tuple[dict, 
         "package": meta.get("package", ""),
         "description": str(data.get("description", "") or "").strip()[:500],
         "generated_by": "codex",
+        "defaults": _clean_defaults(data.get("defaults")),
         "steps": clean_steps,
     }
     if meta.get("package"):

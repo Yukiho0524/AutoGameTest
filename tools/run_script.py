@@ -32,9 +32,10 @@ from core import store, adb, scripts, fast_agent, image_match  # noqa: E402
 ARTIFACTS_DIR = os.path.join(ROOT, "data", "artifacts")
 STABLE_AHASH_DISTANCE = 4
 STABLE_CHECK_INTERVAL = 1.5
-DEFAULT_VISUAL_TIMEOUT = 12.0
-DEFAULT_UNTIL_TIMEOUT = 30.0
-DEFAULT_MATCH_INTERVAL = 0.7
+DEFAULT_VISUAL_TIMEOUT = 60.0
+DEFAULT_UNTIL_TIMEOUT = 120.0
+DEFAULT_MATCH_INTERVAL = 1.0
+DEFAULT_STABLE_TIMEOUT = 45.0
 
 
 def _png_size(data: bytes) -> tuple[int, int]:
@@ -80,6 +81,8 @@ class ScriptRunner:
         self.shots: list[str] = []
         self.art_dir = ""
         self.allow_risk = bool(allow_risk)
+        self.defaults = script.get("defaults") if isinstance(
+            script.get("defaults"), dict) else {}
         if job_id:
             self.art_dir = os.path.join(ARTIFACTS_DIR, job_id)
             os.makedirs(self.art_dir, exist_ok=True)
@@ -147,6 +150,11 @@ class ScriptRunner:
         y = int(round(float(ny) * (self.height - 1)))
         return max(0, min(self.width - 1, x)), max(0, min(self.height - 1, y))
 
+    def _default_seconds(self, key: str, fallback: float) -> float:
+        value = self.defaults.get(key)
+        seconds = _safe_float(value, fallback)
+        return max(0.0, seconds)
+
     def _script_dir(self) -> str:
         script_id = str(self.script.get("id") or "").strip()
         if script_id:
@@ -179,7 +187,7 @@ class ScriptRunner:
         return value if isinstance(value, dict) else {}
 
     def _wait_visual(self, value, label: str,
-                     default_timeout: float = DEFAULT_VISUAL_TIMEOUT) -> bool:
+                     default_timeout: float | None = None) -> bool:
         if value in (None, "", []):
             return True
         if isinstance(value, list):
@@ -197,13 +205,22 @@ class ScriptRunner:
         if not path:
             self._progress(f"{label} 缺少 image/template")
             return False
+        if default_timeout is None:
+            default_timeout = self._default_seconds(
+                "visual_timeout", DEFAULT_VISUAL_TIMEOUT)
         timeout = _safe_float(spec.get("timeout"), default_timeout)
         threshold = _safe_float(
             spec.get("threshold"), image_match.DEFAULT_THRESHOLD)
         interval = max(0.2, _safe_float(
-            spec.get("interval"), DEFAULT_MATCH_INTERVAL))
+            spec.get("interval"),
+            self._default_seconds("match_interval", DEFAULT_MATCH_INTERVAL)))
         deadline = time.time() + max(0.0, timeout)
         last = {"score": 0.0, "error": ""}
+        started = time.time()
+        next_progress = started + 10.0
+        if timeout >= 10:
+            self._progress(
+                f"{label} 等待畫面 {os.path.basename(path)}，最多 {timeout:g} 秒")
         while True:
             png = self._grab_screen()
             if png:
@@ -213,9 +230,19 @@ class ScriptRunner:
                     scan_step=_safe_int(spec.get("scan_step"), 0) or None,
                     max_points=_safe_int(spec.get("max_points"), 121))
                 if last.get("found"):
+                    waited = time.time() - started
+                    if waited >= 3:
+                        self._progress(
+                            f"{label} 已找到 {os.path.basename(path)}"
+                            f"（{waited:.1f}s，score={last.get('score')}）")
                     return True
             if timeout <= 0 or time.time() >= deadline:
                 break
+            if time.time() >= next_progress:
+                self._progress(
+                    f"{label} 還在等待 {os.path.basename(path)}"
+                    f"（score={last.get('score', 0.0)}）")
+                next_progress = time.time() + 10.0
             time.sleep(interval)
         base = os.path.basename(path)
         score = last.get("score", 0.0)
@@ -229,13 +256,22 @@ class ScriptRunner:
         if not path:
             return {"found": False, "score": 0.0,
                     "error": "missing image/template"}
-        timeout = _safe_float(step.get("timeout"), DEFAULT_VISUAL_TIMEOUT)
+        timeout = _safe_float(
+            step.get("timeout"),
+            self._default_seconds("visual_timeout", DEFAULT_VISUAL_TIMEOUT))
         threshold = _safe_float(
             step.get("threshold"), image_match.DEFAULT_THRESHOLD)
         interval = max(0.2, _safe_float(
-            step.get("interval"), DEFAULT_MATCH_INTERVAL))
+            step.get("interval"),
+            self._default_seconds("match_interval", DEFAULT_MATCH_INTERVAL)))
         deadline = time.time() + max(0.0, timeout)
         last = {"found": False, "score": 0.0, "error": ""}
+        started = time.time()
+        next_progress = started + 10.0
+        if timeout >= 10:
+            self._progress(
+                f"{step.get('action')} 等待模板 {os.path.basename(path)}，"
+                f"最多 {timeout:g} 秒")
         while True:
             png = self._grab_screen()
             if png:
@@ -245,14 +281,26 @@ class ScriptRunner:
                     scan_step=_safe_int(step.get("scan_step"), 0) or None,
                     max_points=_safe_int(step.get("max_points"), 121))
                 if last.get("found"):
+                    waited = time.time() - started
+                    if waited >= 3:
+                        self._progress(
+                            f"{step.get('action')} 已找到 {os.path.basename(path)}"
+                            f"（{waited:.1f}s，score={last.get('score')}）")
                     return last
             if timeout <= 0 or time.time() >= deadline:
                 break
+            if time.time() >= next_progress:
+                self._progress(
+                    f"{step.get('action')} 還在等待 {os.path.basename(path)}"
+                    f"（score={last.get('score', 0.0)}）")
+                next_progress = time.time() + 10.0
             time.sleep(interval)
         return last
 
     def _precheck_visuals(self, step: dict) -> bool:
-        timeout = _safe_float(step.get("anchor_timeout"), DEFAULT_VISUAL_TIMEOUT)
+        timeout = _safe_float(
+            step.get("anchor_timeout"),
+            self._default_seconds("visual_timeout", DEFAULT_VISUAL_TIMEOUT))
         if not self._wait_visual(step.get("anchor"), "anchor", timeout):
             return False
         if not self._wait_visual(step.get("scene"), "scene", timeout):
@@ -263,7 +311,9 @@ class ScriptRunner:
         until = step.get("until")
         if until in (None, "", []):
             return True
-        timeout = _safe_float(step.get("until_timeout"), DEFAULT_UNTIL_TIMEOUT)
+        timeout = _safe_float(
+            step.get("until_timeout"),
+            self._default_seconds("until_timeout", DEFAULT_UNTIL_TIMEOUT))
         return self._wait_visual(until, "until", timeout)
 
     def _tap_from_match(self, match: dict, step: dict) -> bool:
@@ -329,8 +379,17 @@ class ScriptRunner:
             wait_after = float(s.get("wait_after", 0) or 0)
             if wait_after > 0:
                 time.sleep(min(wait_after, 120))
-                if action != "wait" and wait_after >= 5:
-                    extra = min(45.0, max(8.0, wait_after * 0.5))
+                stable_default = self._default_seconds(
+                    "stable_timeout", DEFAULT_STABLE_TIMEOUT)
+                if action != "wait" and s.get("stable_timeout") is not None:
+                    extra = _safe_float(s.get("stable_timeout"), stable_default)
+                elif action != "wait" and wait_after >= 1:
+                    extra = min(stable_default, max(8.0, wait_after * 0.75))
+                else:
+                    extra = 0.0
+                if extra > 0:
+                    if extra >= 10:
+                        self._progress(f"等待載入/轉場穩定，最多 {extra:g} 秒")
                     self._wait_for_screen_stable(extra)
             self._screenshot(f"step_{i:02d}")
         elapsed = round(time.time() - started, 1)

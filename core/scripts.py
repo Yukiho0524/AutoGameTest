@@ -13,6 +13,11 @@ Script schema:
     package: com.xxx                      # 選填：執行前啟動的 app
     description: ...                      # AI 產生的流程說明
     generated_by: codex | draft           # draft = AI 註解失敗、僅確定性骨架
+    defaults:
+      visual_timeout: 60       # tap_image/tap_scene 找模板最多等待秒數
+      until_timeout: 120       # until / wait_scene 最多等待秒數
+      stable_timeout: 45       # 有 wait_after 的操作後，最多等待畫面穩定秒數
+      match_interval: 1.0      # 圖片比對輪詢間隔
     created: 2026-07-09 14:00:00
     steps:
       - action: tap | tap_image | tap_scene | long_press | swipe | wait | wait_scene | launch_app
@@ -381,5 +386,11 @@ def build_skeleton(source_path: str, name: str = "",
         "package": package,
         "description": f"由錄影 {base} 的 {len(taps)} 個實測觸控生成",
         "generated_by": "draft",
+        "defaults": {
+            "visual_timeout": 60,
+            "until_timeout": 120,
+            "stable_timeout": 45,
+            "match_interval": 1.0,
+        },
         "steps": steps,
     }

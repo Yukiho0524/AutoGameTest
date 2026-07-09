@@ -180,6 +180,16 @@ steps:
     wait_after: 2.0
 ```
 
+若遊戲常卡在 Loading、下載資源或結算轉場，可在腳本頂層加長預設等待：
+
+```yaml
+defaults:
+  visual_timeout: 60     # tap_image / tap_scene 找模板最多等待
+  until_timeout: 120     # until / wait_scene 最多等待
+  stable_timeout: 45     # 有 wait_after 的操作後，最多等待畫面穩定
+  match_interval: 1.0
+```
+
 適合固定不變的例行流程（每日簽到、領獎、掃蕩）；畫面會變動、需要判斷的任務仍交給 Agent（AI 代打）。腳本 YAML 可在腳本分頁直接查看/編輯（會做格式驗證）。
 
 注意：腳本生成需要 `opencv-python`（抽關鍵幀）與 `PyYAML`；缺 cv2 時仍可生成（AI 只依時間座標註解，品質較低），缺 PyYAML 則腳本功能停用。執行器只用標準庫。
