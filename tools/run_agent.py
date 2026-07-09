@@ -24,6 +24,7 @@ import subprocess
 import sys
 import time
 import traceback
+from datetime import datetime
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -417,27 +418,31 @@ def analyze_performance(performance: dict, fast_result: dict | None = None,
     }
 
 
-def _segment_task(overall_task: str, part: str, index: int, total: int,
-                  previous_summaries: list[str]) -> str:
+def _segment_task(part: str, index: int, total: int,
+                  previous_summaries: list[str],
+                  next_preview: str = "") -> str:
     previous = "\n".join(
         f"- {summary[:500]}" for summary in previous_summaries[-3:]
         if summary.strip())
     if not previous:
         previous = "- 尚無"
-    return f"""這是一個短 checkpoint 分段任務。只完成目前這一段，完成後立刻停止並回報，不要提前執行後面的段落。
+    if not next_preview:
+        next_preview = "- 無"
+    return f"""這是一個短 checkpoint 分段任務。只有「目前可執行段落」可以操作，完成後立刻停止並回報。
 
-完整任務只供理解流程，不代表現在要全部執行：
-{overall_task}
+目前可執行段落（{index}/{total}）：
+{part}
 
 已完成段落摘要：
 {previous}
 
-目前段落（{index}/{total}）：
-{part}
+後續段落預覽（只供辨識流程，禁止現在執行）：
+{next_preview}
 
 執行要求：
 - 本段開始時先重新截圖確認目前畫面，不要依賴上一段截圖。
 - 只做目前段落需要的低風險操作；不要操作下一段。
+- 如果完成目前段落後看到下一段入口，也必須停止，不要順手點下一步。
 - 本段通常包含 1 到 2 個使用者步驟；以最短路徑完成，通常 2 到 6 次 tap/swipe 就應該停止。
 - 如果進入本段時畫面已經符合部分或全部目標，直接把已完成的部分記入摘要，不要退回重做。
 - 一旦畫面符合本段目標，立刻輸出 `CHECKPOINT_SUMMARY:` 並結束，不要繼續探索或建立額外規則。
@@ -792,12 +797,19 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             failed_reason = ""
             for index, batch in enumerate(segment_batches, 1):
                 part = batch["task"]
+                upcoming = segment_batches[index:index + 2]
+                next_preview = "\n".join(
+                    f"- steps {item['start_step']}-{item['end_step']}: "
+                    f"{' / '.join(str(item['task']).splitlines())[:180]}"
+                    for item in upcoming
+                )
                 segment_task = _segment_task(
-                    task, part, index, len(segment_batches), summaries)
+                    part, index, len(segment_batches), summaries, next_preview)
                 segment_prompt = build_agent_prompt(
                     game, segment_task,
                     fast_context=fast_context,
                     visual_context=visual_context)
+                segment_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 segment_info = {
                     "index": index,
                     "start_step": batch["start_step"],
@@ -805,6 +817,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
                     "task": part[:500],
                     "prompt_chars": len(segment_prompt),
                     "timeout_seconds": segment_timeout,
+                    "started_at": segment_started_at,
                     "status": "running",
                 }
                 performance["segments"].append(segment_info)
@@ -817,6 +830,8 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
                             "start_step": batch["start_step"],
                             "end_step": batch["end_step"],
                             "task": part,
+                            "segment_started_at": segment_started_at,
+                            "segment_timeout_seconds": segment_timeout,
                         },
                         performance=performance,
                     )

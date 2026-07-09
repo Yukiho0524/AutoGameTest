@@ -88,6 +88,57 @@ def _pid_exists(pid: int | str | None) -> bool:
         return False
 
 
+def _terminate_process_tree(pid: int | str | None) -> bool:
+    try:
+        pid = int(pid or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0 or not _pid_exists(pid):
+        return False
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=8,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+        else:
+            os.kill(pid, 15)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _stop_job_runner(job: dict | None) -> bool:
+    if not isinstance(job, dict):
+        return False
+    return _terminate_process_tree(job.get("runner_pid"))
+
+
+def delete_job_with_runner(job_id: str) -> dict:
+    job = store.get_job(job_id)
+    stopped = _stop_job_runner(job)
+    return {"ok": store.delete_job(job_id), "stopped_runner": stopped}
+
+
+def clear_jobs_with_runners(scope: str = "finished") -> dict:
+    removed = 0
+    stopped = 0
+    for job in store.list_jobs():
+        should_delete = scope == "all" or job.get("status") in ("done", "error")
+        if not should_delete:
+            continue
+        if scope == "all" and _stop_job_runner(job):
+            stopped += 1
+        if store.delete_job(job["id"]):
+            removed += 1
+    return {"ok": True, "removed": removed, "stopped_runners": stopped}
+
+
 def reconcile_running_jobs() -> None:
     for job in store.list_jobs():
         if job.get("status") != "running":
@@ -850,10 +901,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": store.delete_agent(m.group(1))})
         if p == "/api/jobs":
             scope = q.get("scope", ["finished"])[0]
-            return self._json({"ok": True, "removed": store.clear_jobs(scope)})
+            return self._json(clear_jobs_with_runners(scope))
         m = re.match(r"^/api/jobs/([^/]+)$", p)
         if m:
-            return self._json({"ok": store.delete_job(m.group(1))})
+            return self._json(delete_job_with_runner(m.group(1)))
         return self.send_error(404)
 
 
