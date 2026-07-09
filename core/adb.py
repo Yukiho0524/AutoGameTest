@@ -10,6 +10,7 @@ mouse/keyboard.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 
 from . import config
@@ -293,6 +294,31 @@ def adb_ready(serial: str, emulator: str | None = None) -> bool:
     rc, out, _ = _run([adb_path_for(emu), "-s", serial, "shell", "getprop",
                        "sys.boot_completed"])
     return rc == 0 and out.strip() == "1"
+
+
+def current_package(serial: str, emulator: str | None = None) -> str:
+    emu = normalize_emulator(emulator or emulator_for_serial(serial))
+    _ensure_connected(serial, emu)
+    adb = adb_path_for(emu)
+    commands = [
+        [adb, "-s", serial, "shell", "dumpsys", "window", "windows"],
+        [adb, "-s", serial, "shell", "dumpsys", "activity", "activities"],
+    ]
+    patterns = [
+        r"mCurrentFocus=.*?\s([A-Za-z0-9_.]+)/",
+        r"mFocusedApp=.*?\s([A-Za-z0-9_.]+)/",
+        r"topResumedActivity=.*?\s([A-Za-z0-9_.]+)/",
+        r"ResumedActivity:.*?\s([A-Za-z0-9_.]+)/",
+    ]
+    for args in commands:
+        rc, out, _ = _run(args, timeout=8)
+        if rc != 0 or not out:
+            continue
+        for pattern in patterns:
+            match = re.search(pattern, out)
+            if match:
+                return match.group(1)
+    return ""
 
 
 def screenshot(serial: str, emulator: str | None = None) -> bytes | None:

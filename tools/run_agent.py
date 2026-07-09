@@ -136,6 +136,136 @@ def _base_metrics(game: dict, task: str, model: str,
     }
 
 
+def _float_seconds(value) -> float:
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _stage_label(stage: str) -> str:
+    labels = {
+        "adb_backend_check": "ADB 後端檢查",
+        "adb_ready_check": "模擬器 Ready 檢查",
+        "launch_emulator": "啟動模擬器",
+        "wait_after_emulator_launch": "等待模擬器啟動",
+        "foreground_app_check": "前景 App 檢查",
+        "launch_app": "啟動遊戲 App",
+        "wait_after_app_launch": "等待遊戲啟動",
+        "first_screenshot": "首張截圖",
+        "screenshot": "截圖",
+        "fast_rule_match": "快速規則比對",
+        "post_action_screenshot": "操作後截圖",
+        "codex_decision": "Codex 判斷與操作",
+    }
+    if stage.startswith("fast_action_"):
+        return "快速操作"
+    return labels.get(stage, stage)
+
+
+def analyze_performance(performance: dict, fast_result: dict | None = None,
+                        result: dict | None = None,
+                        fast_rules_merge: dict | None = None,
+                        visual_memory_merge: dict | None = None) -> dict:
+    total = _float_seconds(performance.get("total_seconds"))
+    stages: list[dict] = []
+    for item in (fast_result or {}).get("timings", []):
+        if not isinstance(item, dict):
+            continue
+        seconds = _float_seconds(item.get("seconds"))
+        if seconds <= 0:
+            continue
+        stage = str(item.get("stage") or "unknown")
+        stages.append({
+            "stage": stage,
+            "label": _stage_label(stage),
+            "seconds": round(seconds, 3),
+            "detail": str(item.get("detail") or ""),
+            "ok": item.get("ok"),
+        })
+    codex_seconds = _float_seconds(performance.get("codex_seconds"))
+    if codex_seconds > 0:
+        stages.append({
+            "stage": "codex_decision",
+            "label": _stage_label("codex_decision"),
+            "seconds": round(codex_seconds, 3),
+            "detail": f"{performance.get('model')} + {performance.get('reasoning_effort')}",
+            "ok": bool((result or {}).get("ok")),
+        })
+    if not stages and performance.get("fast_seconds"):
+        stages.append({
+            "stage": "fast_layer_total",
+            "label": "Fast layer 總耗時",
+            "seconds": round(_float_seconds(performance.get("fast_seconds")), 3),
+            "detail": performance.get("fast_handoff_reason", ""),
+            "ok": None,
+        })
+    stages.sort(key=lambda row: row["seconds"], reverse=True)
+    bottleneck = stages[0] if stages else None
+    observations: list[str] = []
+    recommendations: list[str] = []
+
+    def stage_seconds(name: str) -> float:
+        return sum(row["seconds"] for row in stages if row["stage"] == name)
+
+    emulator_wait = stage_seconds("wait_after_emulator_launch") + stage_seconds("launch_emulator")
+    app_launch = stage_seconds("launch_app") + stage_seconds("wait_after_app_launch")
+    first_screenshot = stage_seconds("first_screenshot")
+    prompt_chars = int(performance.get("prompt_chars") or 0)
+    handoff = str(performance.get("fast_handoff_reason") or "")
+
+    if bottleneck:
+        share = (bottleneck["seconds"] / total * 100) if total > 0 else 0
+        observations.append(
+            f"最慢階段是「{bottleneck['label']}」，耗時 {bottleneck['seconds']} 秒"
+            + (f"，約佔總時間 {share:.0f}%" if share else "")
+            + "。"
+        )
+    if emulator_wait >= 5:
+        observations.append(f"模擬器啟動/暖機耗時 {emulator_wait:.1f} 秒。")
+        recommendations.append("排程或手動執行前先保持模擬器常駐；之後可做排程前預熱，避開冷啟動。")
+    if app_launch >= 2.5:
+        observations.append(f"遊戲 App 啟動等待耗時 {app_launch:.1f} 秒。")
+        recommendations.append("若遊戲已在前景，runner 會跳過重新 launch；若仍偏慢，優先檢查模擬器效能與遊戲載入畫面。")
+    if first_screenshot >= 3:
+        observations.append(f"首張截圖耗時 {first_screenshot:.1f} 秒。")
+        recommendations.append("ADB 截圖偏慢時，優先確認模擬器解析度、ADB 後端與電腦負載。")
+    if handoff == "no matching fast rule":
+        observations.append("fast layer 已拿到畫面，但沒有命中安全快速規則。")
+        recommendations.append("把穩定安全畫面加入 visual memory 或 fast rules，下次同畫面可少走 Codex 判斷。")
+    if codex_seconds >= 60:
+        observations.append(f"Codex 判斷耗時 {codex_seconds:.1f} 秒。")
+        recommendations.append("若同一畫面常重複出現，應沉澱成圖片記憶或快速規則，讓本地層先處理。")
+    if prompt_chars >= 12000:
+        observations.append(f"Prompt 長度 {prompt_chars} 字元，可能拖慢模型判斷。")
+        recommendations.append("整理 Skill，保留穩定流程與畫面規則，移除一次性流水帳。")
+    if performance.get("mode") == "segmented":
+        recommendations.append("目前是分段模式，會多次啟動 Codex；一般操作建議維持單輪模式。")
+    if fast_rules_merge and (fast_rules_merge.get("added") or fast_rules_merge.get("updated")):
+        recommendations.append("本次已合併新的快速規則，下一次遇到同類畫面應會更快。")
+    if visual_memory_merge and (visual_memory_merge.get("added") or visual_memory_merge.get("updated")):
+        recommendations.append("本次已合併新的圖片記憶，後續畫面辨識會更穩。")
+    if not observations:
+        observations.append("目前沒有明顯單一慢點。")
+    if not recommendations:
+        recommendations.append("持續累積圖片記憶與 fast rules，讓重複流程逐步本地化。")
+
+    status = "ok"
+    if codex_seconds >= 120 or emulator_wait >= 10 or first_screenshot >= 6:
+        status = "slow"
+    elif codex_seconds >= 60 or app_launch >= 4 or handoff == "no matching fast rule":
+        status = "watch"
+
+    return {
+        "status": status,
+        "total_seconds": round(total, 3),
+        "bottleneck": bottleneck,
+        "observations": observations[:8],
+        "recommendations": recommendations[:8],
+        "stages": stages[:12],
+    }
+
+
 def _segment_task(overall_task: str, part: str, index: int, total: int,
                   previous_summaries: list[str]) -> str:
     previous = "\n".join(
@@ -376,6 +506,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
         performance["fast_handoff_reason"] = fast_result.get("handoff_reason", "")
         performance["fast_rules_loaded"] = fast_result.get("fast_rules_loaded", 0)
         performance["visual_rules_loaded"] = fast_result.get("visual_rules_loaded", 0)
+        performance["fast_timings"] = fast_result.get("timings", [])
     if fast_result and not print_only:
         if job_id:
             store.update_job(job_id, fast_decision=fast_result,
@@ -396,6 +527,10 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             performance["mode"] = "fast-rules"
             performance["segments_completed"] = 1
             performance["total_seconds"] = round(time.perf_counter() - total_start, 3)
+            performance_analysis = analyze_performance(performance, fast_result, result)
+            performance["analysis"] = performance_analysis
+            result["performance"] = performance
+            result["performance_analysis"] = performance_analysis
             if job_id:
                 store.update_job(
                     job_id,
@@ -405,6 +540,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
                     attempts=[],
                     fast_decision=fast_result,
                     performance=performance,
+                    performance_analysis=performance_analysis,
                     result=_format_job_result(result))
             return result
 
@@ -548,6 +684,16 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             source=f"run_agent:{job_id or 'manual'}",
         )
 
+    performance_analysis = analyze_performance(
+        performance,
+        fast_result,
+        result,
+        fast_rules_merge=fast_rules_merge,
+        visual_memory_merge=visual_memory_merge,
+    )
+    performance["analysis"] = performance_analysis
+    result["performance_analysis"] = performance_analysis
+
     if job_id:
         store.update_job(
             job_id,
@@ -560,6 +706,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             visual_memory=visual_memory_merge,
             skill_lessons=skill_lessons_update,
             performance=performance,
+            performance_analysis=performance_analysis,
             progress=None,
             result=_format_job_result(result),
             error_trace=(result.get("traceback") or "")[:4000] or None)

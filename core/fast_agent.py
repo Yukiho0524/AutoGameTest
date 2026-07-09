@@ -381,6 +381,19 @@ def _screenshot_with_retry(serial: str, emulator: str,
     return None
 
 
+def _add_timing(result: dict, stage: str, start: float,
+                detail: str = "", ok: bool | None = None) -> None:
+    item = {
+        "stage": stage,
+        "seconds": round(time.perf_counter() - start, 3),
+    }
+    if detail:
+        item["detail"] = detail
+    if ok is not None:
+        item["ok"] = bool(ok)
+    result.setdefault("timings", []).append(item)
+
+
 def run_fast_rules(game: dict, task: str = "", job_id: str | None = None,
                    max_steps: int = 8) -> dict:
     result = {
@@ -391,6 +404,7 @@ def run_fast_rules(game: dict, task: str = "", job_id: str | None = None,
         "steps": [],
         "artifact_dir": "",
         "handoff_reason": "",
+        "timings": [],
     }
     if not result["enabled"]:
         result["handoff_reason"] = "desktop control"
@@ -414,23 +428,59 @@ def run_fast_rules(game: dict, task: str = "", job_id: str | None = None,
     result["serial"] = serial
     result["package"] = package
 
-    if not adb.available(emulator):
+    stage_start = time.perf_counter()
+    backend_available = adb.available(emulator)
+    _add_timing(result, "adb_backend_check", stage_start, emulator, backend_available)
+    if not backend_available:
         result["handoff_reason"] = f"{emulator} adb backend is unavailable"
         return result
 
-    if not adb.adb_ready(serial, emulator):
-        adb.launch_instance(_safe_int(lc.get("instance", 0)), emulator)
+    stage_start = time.perf_counter()
+    ready = adb.adb_ready(serial, emulator)
+    _add_timing(result, "adb_ready_check", stage_start, serial, ready)
+    if not ready:
+        stage_start = time.perf_counter()
+        launched = adb.launch_instance(_safe_int(lc.get("instance", 0)), emulator)
+        _add_timing(result, "launch_emulator", stage_start, emulator, launched)
+        stage_start = time.perf_counter()
         time.sleep(6)
+        _add_timing(result, "wait_after_emulator_launch", stage_start, "fixed 6s warmup", True)
     if package:
-        result["prelaunch"] = adb.launch_app(serial, package, emulator)
-        time.sleep(2)
+        stage_start = time.perf_counter()
+        foreground = adb.current_package(serial, emulator)
+        _add_timing(
+            result,
+            "foreground_app_check",
+            stage_start,
+            foreground or "unknown",
+            foreground == package,
+        )
+        result["foreground_package"] = foreground
+        if foreground == package:
+            result["prelaunch"] = "skipped_already_foreground"
+        else:
+            stage_start = time.perf_counter()
+            launched = adb.launch_app(serial, package, emulator)
+            result["prelaunch"] = launched
+            _add_timing(result, "launch_app", stage_start, package, launched)
+            stage_start = time.perf_counter()
+            time.sleep(2)
+            _add_timing(result, "wait_after_app_launch", stage_start, "fixed 2s warmup", True)
 
     artifact_dir = _artifact_dir(job_id)
     result["artifact_dir"] = artifact_dir
     last_signature = None
     repeat_counts: dict[str, int] = {}
     for step_index in range(max(0, max_steps)):
+        stage_start = time.perf_counter()
         png = _screenshot_with_retry(serial, emulator)
+        _add_timing(
+            result,
+            "first_screenshot" if step_index == 0 else "screenshot",
+            stage_start,
+            f"step {step_index + 1}",
+            bool(png),
+        )
         if not png:
             result["handoff_reason"] = "screenshot failed after retry"
             break
@@ -444,12 +494,20 @@ def run_fast_rules(game: dict, task: str = "", job_id: str | None = None,
 
         matched = None
         match_reason = ""
+        stage_start = time.perf_counter()
         for rule in rules:
             ok, reason = match_rule(rule, signature)
             if ok:
                 matched = rule
                 match_reason = reason
                 break
+        _add_timing(
+            result,
+            "fast_rule_match",
+            stage_start,
+            matched.get("id", "") if matched else "no match",
+            bool(matched),
+        )
         if not matched:
             result["handoff_reason"] = "no matching fast rule"
             break
@@ -476,7 +534,9 @@ def run_fast_rules(game: dict, task: str = "", job_id: str | None = None,
                 result["steps"].append(step)
                 result["handoff_reason"] = "invalid fast rule action"
                 return result
+            stage_start = time.perf_counter()
             ok, detail = _execute_action(action, serial, emulator, package)
+            _add_timing(result, f"fast_action_{action.get('type')}", stage_start, detail, ok)
             step["actions"].append({"ok": ok, "detail": detail, "note": action.get("note", "")})
             if not ok:
                 result["steps"].append(step)
@@ -488,7 +548,9 @@ def run_fast_rules(game: dict, task: str = "", job_id: str | None = None,
                 wait = 0.7
             if wait > 0:
                 time.sleep(wait)
+        stage_start = time.perf_counter()
         after_png = _screenshot_with_retry(serial, emulator, attempts=2, wait=0.5)
+        _add_timing(result, "post_action_screenshot", stage_start, f"step {step_index + 1}", bool(after_png))
         if after_png:
             after_path = os.path.join(artifact_dir, f"fast_{step_index + 1:03d}_after.png")
             with open(after_path, "wb") as f:

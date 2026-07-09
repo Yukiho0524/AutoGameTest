@@ -116,6 +116,42 @@ button.small { padding: 4px 10px; font-size: 12px; }
   color: var(--muted); font-size: 11px; margin-bottom: 5px;
   overflow-wrap: anywhere;
 }
+.performance-analysis {
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+  background: #0b0d12;
+}
+.perf-summary {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding-bottom: 8px; border-bottom: 1px solid var(--line);
+}
+.perf-summary strong { font-size: 13px; }
+.perf-summary span {
+  color: var(--muted); font-size: 12px; overflow-wrap: anywhere;
+}
+.perf-summary.status-ok strong { color: var(--accent2); }
+.perf-summary.status-watch strong { color: #f0b84f; }
+.perf-summary.status-slow strong { color: var(--danger); }
+.perf-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px;
+}
+.perf-title {
+  color: var(--muted); font-size: 11px; margin: 0 0 4px;
+  text-transform: uppercase; letter-spacing: 0;
+}
+.perf-grid p {
+  margin: 4px 0; font-size: 12px; overflow-wrap: anywhere;
+}
+.perf-stages {
+  display: flex; flex-direction: column; gap: 6px; margin-top: 10px;
+}
+.perf-stage {
+  display: grid; grid-template-columns: minmax(120px, 1fr) auto;
+  gap: 6px 10px; align-items: center; padding-top: 6px;
+  border-top: 1px solid rgba(44, 49, 61, .7); font-size: 12px;
+}
+.perf-stage small {
+  grid-column: 1 / -1; color: var(--muted); overflow-wrap: anywhere;
+}
 
 .diagnostics-summary {
   display: grid; grid-template-columns: minmax(220px, .45fr) minmax(280px, 1fr);
@@ -227,6 +263,7 @@ button.small { padding: 4px 10px; font-size: 12px; }
   .schedule-layout { grid-template-columns: 1fr; }
   .jobs-layout, .diagnostics-layout, .diagnostics-summary, .settings-layout { grid-template-columns: 1fr; }
   .job-detail, .diagnostics-side { position: static; }
+  .perf-grid { grid-template-columns: 1fr; }
 }
 
 /* ---- emulator recording bar ---- */

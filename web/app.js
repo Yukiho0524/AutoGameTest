@@ -611,6 +611,7 @@ async function loadJobDetail(id) {
     <span>${esc(job.created || "")}</span>`;
   $("#job-payload").textContent = formatJson(job.payload);
   $("#job-result").textContent = job.result ? String(job.result) : "(尚無結果)";
+  renderPerformanceAnalysis(job.performance_analysis || job.performance?.analysis);
   $("#job-performance").textContent = job.performance
     ? formatJson(job.performance)
     : "(尚無效能資料)";
@@ -622,6 +623,46 @@ function renderEmptyJobDetail() {
   $("#job-detail-title").textContent = "任務詳情";
   $("#job-detail-empty").hidden = false;
   $("#job-detail-body").hidden = true;
+}
+
+function renderPerformanceAnalysis(analysis) {
+  const box = $("#job-performance-analysis");
+  if (!analysis) {
+    box.innerHTML = '<p class="hint">尚無效能診斷。</p>';
+    return;
+  }
+  const bottleneck = analysis.bottleneck;
+  const stages = Array.isArray(analysis.stages) ? analysis.stages.slice(0, 6) : [];
+  const observations = Array.isArray(analysis.observations) ? analysis.observations : [];
+  const recommendations = Array.isArray(analysis.recommendations) ? analysis.recommendations : [];
+  box.innerHTML = `
+    <div class="perf-summary status-${esc(analysis.status || "ok")}">
+      <strong>${performanceStatusText(analysis.status || "ok")}</strong>
+      <span>${Number(analysis.total_seconds || 0).toFixed(1)} 秒</span>
+      ${bottleneck ? `<span>最慢：${esc(bottleneck.label || bottleneck.stage)} ${Number(bottleneck.seconds || 0).toFixed(1)} 秒</span>` : ""}
+    </div>
+    <div class="perf-grid">
+      <div>
+        <p class="perf-title">觀察</p>
+        ${observations.length ? observations.map(x => `<p>${esc(x)}</p>`).join("") : '<p class="hint">沒有明顯慢點。</p>'}
+      </div>
+      <div>
+        <p class="perf-title">建議</p>
+        ${recommendations.length ? recommendations.map(x => `<p>${esc(x)}</p>`).join("") : '<p class="hint">持續累積圖片記憶與快速規則。</p>'}
+      </div>
+    </div>
+    <div class="perf-stages">
+      ${stages.map(s => `
+        <div class="perf-stage">
+          <span>${esc(s.label || s.stage)}</span>
+          <strong>${Number(s.seconds || 0).toFixed(2)}s</strong>
+          ${s.detail ? `<small>${esc(s.detail)}</small>` : ""}
+        </div>`).join("")}
+    </div>`;
+}
+
+function performanceStatusText(status) {
+  return { ok: "速度正常", watch: "建議觀察", slow: "明顯偏慢" }[status] || status;
 }
 
 function renderLog(kind, log) {
