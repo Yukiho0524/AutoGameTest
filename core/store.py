@@ -7,6 +7,8 @@ import re
 import threading
 from datetime import date
 
+from core import config
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_FILE = os.path.join(ROOT, "data", "games.json")
 JOBS_DIR = os.path.join(ROOT, "data", "jobs")
@@ -16,8 +18,11 @@ SKILLS_DIR = os.path.join(ROOT, ".codex", "skills")
 AGENTS_DIR = os.path.join(ROOT, ".codex", "agents")
 DEFAULT_SETTINGS = {
     "ai_timeout_seconds": 3600,
+    "codex_model": "gpt-5.5",
+    "codex_reasoning_effort": "high",
     "recording_dir": "",
 }
+CODEX_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 
 _lock = threading.Lock()
 
@@ -291,26 +296,50 @@ def get_agent(agent_id: str) -> dict | None:
 # ---------------- settings ----------------
 
 def _clean_settings(settings: dict | None) -> dict:
+    raw = settings if isinstance(settings, dict) else {}
     clean = dict(DEFAULT_SETTINGS)
-    if isinstance(settings, dict):
-        clean.update(settings)
+    clean.update(raw)
     try:
         timeout = int(clean.get("ai_timeout_seconds", DEFAULT_SETTINGS["ai_timeout_seconds"]))
     except (TypeError, ValueError):
         timeout = DEFAULT_SETTINGS["ai_timeout_seconds"]
     clean["ai_timeout_seconds"] = max(60, min(86400, timeout))
+    configured_model = config.get(
+        "codex_model",
+        "AUTOGAMETEST_CODEX_MODEL",
+        "",
+    )
+    clean["codex_model"] = (
+        str(raw.get("codex_model") or configured_model or DEFAULT_SETTINGS["codex_model"])
+        .strip()
+        or DEFAULT_SETTINGS["codex_model"]
+    )
+    configured_effort = config.get(
+        "codex_reasoning_effort",
+        "AUTOGAMETEST_CODEX_REASONING_EFFORT",
+        "",
+    )
+    effort = str(
+        raw.get(
+            "codex_reasoning_effort",
+        ) or configured_effort or DEFAULT_SETTINGS["codex_reasoning_effort"]
+    ).strip().lower()
+    clean["codex_reasoning_effort"] = (
+        effort if effort in CODEX_REASONING_EFFORTS
+        else DEFAULT_SETTINGS["codex_reasoning_effort"]
+    )
     clean["recording_dir"] = str(clean.get("recording_dir", "") or "").strip()
     return clean
 
 
 def get_settings() -> dict:
     if not os.path.isfile(SETTINGS_FILE):
-        return dict(DEFAULT_SETTINGS)
+        return _clean_settings({})
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
-        return dict(DEFAULT_SETTINGS)
+        return _clean_settings({})
     return _clean_settings(data)
 
 

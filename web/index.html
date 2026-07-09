@@ -267,6 +267,19 @@
           <input id="settings-timeout-minutes" name="ai_timeout_minutes"
                  type="number" min="1" max="1440" step="1" required>
         </label>
+        <label>Codex model
+          <input id="settings-codex-model" name="codex_model"
+                 value="gpt-5.5" required>
+        </label>
+        <label>推理強度
+          <select id="settings-codex-reasoning-effort" name="codex_reasoning_effort">
+            <option value="minimal">minimal</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high" selected>high</option>
+            <option value="xhigh">xhigh</option>
+          </select>
+        </label>
         <p class="hint">套用於學習 Skill 與執行 Agent 的背景 Codex 任務。</p>
         <div class="actions">
           <button type="submit" class="primary">儲存設定</button>

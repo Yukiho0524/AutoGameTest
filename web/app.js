@@ -12,6 +12,8 @@ let AGENTS = [];
 let SCHEDULES = [];
 let SELECTED_JOB_ID = null;
 let SETTINGS = {};
+const DEFAULT_CODEX_MODEL = "gpt-5.5";
+const DEFAULT_CODEX_REASONING_EFFORT = "high";
 const DAYS = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"];
 
 // ---------- tabs ----------
@@ -757,27 +759,42 @@ async function loadSettings() {
   SETTINGS = settings || {};
   const seconds = Number(SETTINGS.ai_timeout_seconds || 3600);
   $("#settings-timeout-minutes").value = Math.round(seconds / 60);
+  $("#settings-codex-model").value = SETTINGS.codex_model || DEFAULT_CODEX_MODEL;
+  $("#settings-codex-reasoning-effort").value =
+    SETTINGS.codex_reasoning_effort || DEFAULT_CODEX_REASONING_EFFORT;
   renderSettings();
 }
 
 function renderSettings() {
   const seconds = Number(SETTINGS.ai_timeout_seconds || 3600);
+  const model = SETTINGS.codex_model || DEFAULT_CODEX_MODEL;
+  const reasoning = SETTINGS.codex_reasoning_effort || DEFAULT_CODEX_REASONING_EFFORT;
   $("#settings-summary").innerHTML = `
     <p><strong>AI 任務 timeout</strong></p>
     <p>${Math.round(seconds / 60)} 分鐘</p>
-    <p class="hint">${seconds} 秒</p>`;
+    <p class="hint">${seconds} 秒</p>
+    <p><strong>Codex</strong></p>
+    <p>${esc(model)} + ${esc(reasoning)}</p>
+    <p class="hint">背景學習與 Agent 執行都會套用</p>`;
 }
 
 $("#settings-form").onsubmit = async (e) => {
   e.preventDefault();
   const minutes = Number($("#settings-timeout-minutes").value || 60);
   const seconds = Math.max(60, Math.min(86400, Math.round(minutes * 60)));
+  const model = ($("#settings-codex-model").value || DEFAULT_CODEX_MODEL).trim();
+  const reasoning = $("#settings-codex-reasoning-effort").value || DEFAULT_CODEX_REASONING_EFFORT;
   const r = await api("/api/settings", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ai_timeout_seconds: seconds }),
+    body: JSON.stringify({
+      ai_timeout_seconds: seconds,
+      codex_model: model,
+      codex_reasoning_effort: reasoning,
+    }),
   });
   SETTINGS = r.settings || {};
-  $("#settings-status").textContent = `已儲存：${Math.round((SETTINGS.ai_timeout_seconds || seconds) / 60)} 分鐘`;
+  $("#settings-status").textContent =
+    `已儲存：${SETTINGS.codex_model || model} + ${SETTINGS.codex_reasoning_effort || reasoning}`;
   renderSettings();
 };
 

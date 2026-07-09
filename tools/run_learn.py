@@ -101,6 +101,8 @@ def _summarize_attempts(attempts: list[dict]) -> list[dict]:
             "engine": a.get("engine"),
             "ok": a.get("ok"),
             "found": a.get("found"),
+            "model": a.get("model"),
+            "reasoning_effort": a.get("reasoning_effort"),
             "quota": a.get("quota"),
             "rc": a.get("rc"),
             "detail": (a.get("detail") or "")[:500],
@@ -108,17 +110,40 @@ def _summarize_attempts(attempts: list[dict]) -> list[dict]:
     return rows
 
 
+def _resolve_codex_settings(model: str | None = None,
+                            reasoning_effort: str | None = None) -> tuple[str, str]:
+    settings = store.get_settings()
+    model = str(model or settings.get("codex_model") or "gpt-5.5").strip() or "gpt-5.5"
+    reasoning_effort = (
+        str(reasoning_effort or settings.get("codex_reasoning_effort") or "high")
+        .strip()
+        .lower()
+    )
+    if reasoning_effort not in ai_runner.CODEX_REASONING_EFFORTS:
+        reasoning_effort = "high"
+    return model, reasoning_effort
+
+
 def run_learn(game_id: str, sources: list[str] | None = None, job_id: str | None = None,
-              engine: str = "codex", fallback: bool = False, timeout: int = 3600) -> dict:
+              engine: str = "codex", fallback: bool = False, timeout: int = 3600,
+              codex_model: str | None = None,
+              codex_reasoning_effort: str | None = None) -> dict:
     game = store.get_game(game_id)
     if not game:
         return {"ok": False, "error": f"遊戲不存在: {game_id}"}
 
     sources = sources or game.get("learn_sources", []) or []
     prompt = build_learn_prompt(game, sources)
+    codex_model, codex_reasoning_effort = _resolve_codex_settings(
+        codex_model, codex_reasoning_effort)
 
     if job_id:
-        store.update_job(job_id, status="running")
+        store.update_job(
+            job_id,
+            status="running",
+            codex_model=codex_model,
+            codex_reasoning_effort=codex_reasoning_effort,
+        )
 
     try:
         result = ai_runner.run_with_fallback(
@@ -128,6 +153,8 @@ def run_learn(game_id: str, sources: list[str] | None = None, job_id: str | None
             engine=engine,
             fallback=fallback,
             codex_sandbox="danger-full-access",
+            codex_model=codex_model,
+            codex_reasoning_effort=codex_reasoning_effort,
         )
         content = (result.get("output") or "").strip()
         if result.get("ok") and content:
@@ -168,6 +195,10 @@ def main(argv=None) -> int:
     ap.add_argument("--job", help="process queued learn job")
     ap.add_argument("--engine", choices=["auto", "codex"], default="codex")
     ap.add_argument("--timeout", type=int, default=3600)
+    ap.add_argument("--model", default=None, help="Codex model，預設 gpt-5.5")
+    ap.add_argument("--reasoning-effort", default=None,
+                    choices=sorted(ai_runner.CODEX_REASONING_EFFORTS),
+                    help="Codex reasoning effort，預設 high")
     args = ap.parse_args(argv)
 
     game_id = args.game
@@ -192,6 +223,8 @@ def main(argv=None) -> int:
         engine=args.engine,
         fallback=False,
         timeout=args.timeout,
+        codex_model=args.model,
+        codex_reasoning_effort=args.reasoning_effort,
     )
     print(result.get("result") or result.get("output") or result.get("error", ""))
     return 0 if result.get("ok") else 1

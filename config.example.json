@@ -7,5 +7,7 @@
   "bluestacks_adb_path": "",
   "bluestacks_serial": "127.0.0.1:5555",
   "bluestacks_instance": "",
-  "codex_path": ""
+  "codex_path": "",
+  "codex_model": "gpt-5.5",
+  "codex_reasoning_effort": "high"
 }

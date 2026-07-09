@@ -46,12 +46,23 @@ def ai_timeout_seconds() -> int:
     return int(store.get_settings().get("ai_timeout_seconds", 3600))
 
 
+def ai_codex_settings() -> dict:
+    settings = store.get_settings()
+    return {
+        "model": str(settings.get("codex_model", "gpt-5.5") or "gpt-5.5").strip(),
+        "reasoning_effort": str(
+            settings.get("codex_reasoning_effort", "high") or "high"
+        ).strip().lower(),
+    }
+
+
 def spawn_runner(script_name: str, job_id: str, engine: str = "codex",
                  timeout: int | None = None) -> bool:
     runner = os.path.join(ROOT, "tools", script_name)
     if not os.path.isfile(runner):
         return False
     timeout = int(timeout or ai_timeout_seconds())
+    codex_settings = ai_codex_settings()
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         out_path = os.path.join(LOG_DIR, f"{job_id}.out.log")
@@ -61,7 +72,9 @@ def spawn_runner(script_name: str, job_id: str, engine: str = "codex",
         try:
             subprocess.Popen(
                 [sys.executable, runner, "--job", job_id, "--engine", engine,
-                 "--timeout", str(timeout)],
+                 "--timeout", str(timeout),
+                 "--model", codex_settings["model"],
+                 "--reasoning-effort", codex_settings["reasoning_effort"]],
                 cwd=ROOT, creationflags=_CREATE_NO_WINDOW,
                 stdout=out, stderr=err,
                 stdin=subprocess.DEVNULL,
@@ -70,7 +83,9 @@ def spawn_runner(script_name: str, job_id: str, engine: str = "codex",
             out.close()
             err.close()
         store.update_job(job_id, log_stdout=out_path, log_stderr=err_path,
-                         ai_timeout_seconds=timeout)
+                         ai_timeout_seconds=timeout,
+                         codex_model=codex_settings["model"],
+                         codex_reasoning_effort=codex_settings["reasoning_effort"])
         return True
     except Exception:
         return False
@@ -281,11 +296,15 @@ def _job_status_check() -> dict:
 
 def _settings_check() -> dict:
     timeout = ai_timeout_seconds()
+    codex_settings = ai_codex_settings()
     return _check(
         "ok",
         "ai_timeout",
-        "AI 任務 timeout",
-        f"{timeout} 秒（約 {timeout // 60} 分鐘）",
+        "AI 任務設定",
+        (
+            f"timeout {timeout} 秒（約 {timeout // 60} 分鐘）；"
+            f"Codex {codex_settings['model']} + {codex_settings['reasoning_effort']}"
+        ),
     )
 
 

@@ -43,11 +43,27 @@ def _summarize_attempts(attempts: list[dict]) -> list[dict]:
             "engine": a.get("engine"),
             "ok": a.get("ok"),
             "found": a.get("found"),
+            "model": a.get("model"),
+            "reasoning_effort": a.get("reasoning_effort"),
             "quota": a.get("quota"),
             "rc": a.get("rc"),
             "detail": (a.get("detail") or "")[:500],
         })
     return rows
+
+
+def _resolve_codex_settings(model: str | None = None,
+                            reasoning_effort: str | None = None) -> tuple[str, str]:
+    settings = store.get_settings()
+    model = str(model or settings.get("codex_model") or "gpt-5.5").strip() or "gpt-5.5"
+    reasoning_effort = (
+        str(reasoning_effort or settings.get("codex_reasoning_effort") or "high")
+        .strip()
+        .lower()
+    )
+    if reasoning_effort not in ai_runner.CODEX_REASONING_EFFORTS:
+        reasoning_effort = "high"
+    return model, reasoning_effort
 
 
 def _format_job_result(result: dict) -> str:
@@ -181,6 +197,8 @@ AUTOGAMETEST_SKILL_LESSONS:
 def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
               engine="codex", fallback=False, timeout=3600,
               fast_mode=True, fast_steps=8,
+              codex_model: str | None = None,
+              codex_reasoning_effort: str | None = None,
               print_only=False) -> dict:
     if agent_id:
         agent = store.get_agent(agent_id)
@@ -196,8 +214,16 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     if not task:
         return {"ok": False, "error": "缺少任務內容"}
 
+    codex_model, codex_reasoning_effort = _resolve_codex_settings(
+        codex_model, codex_reasoning_effort)
+
     if job_id:
-        store.update_job(job_id, status="running")
+        store.update_job(
+            job_id,
+            status="running",
+            codex_model=codex_model,
+            codex_reasoning_effort=codex_reasoning_effort,
+        )
 
     fast_result = None
     if fast_mode and game.get("control") == "emulator" and not print_only:
@@ -251,7 +277,9 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     try:
         result = ai_runner.run_with_fallback(
             prompt, cwd=ROOT, timeout=timeout, engine=engine,
-            fallback=fallback, codex_sandbox=sandbox)
+            fallback=fallback, codex_sandbox=sandbox,
+            codex_model=codex_model,
+            codex_reasoning_effort=codex_reasoning_effort)
     except Exception as e:
         result = {
             "engine_used": "none",
@@ -313,6 +341,10 @@ def main(argv=None):
     ap.add_argument("--job", help="處理指定 job id 並回寫狀態")
     ap.add_argument("--engine", choices=["auto", "codex"], default="codex")
     ap.add_argument("--timeout", type=int, default=3600)
+    ap.add_argument("--model", default=None, help="Codex model，預設 gpt-5.5")
+    ap.add_argument("--reasoning-effort", default=None,
+                    choices=sorted(ai_runner.CODEX_REASONING_EFFORTS),
+                    help="Codex reasoning effort，預設 high")
     ap.add_argument("--no-fast", action="store_true", help="停用 emulator 快速判斷層")
     ap.add_argument("--fast-steps", type=int, default=8, help="快速規則最多連續執行步數")
     ap.add_argument("--print-prompt", action="store_true", help="只組裝並印出 prompt，不執行")
@@ -331,7 +363,10 @@ def main(argv=None):
     res = run_agent(agent_id=agent_id, game_id=game_id, task=task, job_id=args.job,
                     engine=args.engine, fallback=False,
                     timeout=args.timeout, fast_mode=not args.no_fast,
-                    fast_steps=args.fast_steps, print_only=args.print_prompt)
+                    fast_steps=args.fast_steps,
+                    codex_model=args.model,
+                    codex_reasoning_effort=args.reasoning_effort,
+                    print_only=args.print_prompt)
 
     if args.print_prompt and res.get("ok"):
         print(res["prompt"]); return 0
