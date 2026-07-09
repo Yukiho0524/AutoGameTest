@@ -1,8 +1,9 @@
 """Replay a generated script with plain ADB — no AI involved.
 
 This is the execution half of the 腳本 feature: generation needs Codex, but
-replay is deterministic coordinate playback. Runs as a job runner (same
-spawn contract as run_agent.py) or standalone via --script.
+replay is deterministic ADB playback. Scripts can use either fixed normalized
+coordinates or template-matched image taps with scene/until verification. Runs
+as a job runner (same spawn contract as run_agent.py) or standalone via --script.
 
 Usage:
     python tools/run_script.py --script <script_id>
@@ -26,11 +27,14 @@ for _s in (sys.stdout, sys.stderr):
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from core import store, adb, scripts, fast_agent  # noqa: E402
+from core import store, adb, scripts, fast_agent, image_match  # noqa: E402
 
 ARTIFACTS_DIR = os.path.join(ROOT, "data", "artifacts")
 STABLE_AHASH_DISTANCE = 4
 STABLE_CHECK_INTERVAL = 1.5
+DEFAULT_VISUAL_TIMEOUT = 12.0
+DEFAULT_UNTIL_TIMEOUT = 30.0
+DEFAULT_MATCH_INTERVAL = 0.7
 
 
 def _png_size(data: bytes) -> tuple[int, int]:
@@ -46,6 +50,20 @@ def _ahash_distance(a: str, b: str) -> int:
         return (int(a, 16) ^ int(b, 16)).bit_count()
     except (TypeError, ValueError):
         return 64
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 class ScriptRunner:
@@ -72,14 +90,18 @@ class ScriptRunner:
         if self.job_id:
             store.update_job(self.job_id, progress=text)
 
+    def _grab_screen(self) -> bytes | None:
+        png = adb.screenshot(self.serial, self.emulator)
+        if png and not self.width:
+            self.width, self.height = _png_size(png)
+        return png
+
     def _screenshot(self, tag: str) -> None:
         if not self.art_dir:
             return
-        png = adb.screenshot(self.serial, self.emulator)
+        png = self._grab_screen()
         if not png:
             return
-        if not self.width:
-            self.width, self.height = _png_size(png)
         path = os.path.join(self.art_dir, f"{tag}.png")
         try:
             with open(path, "wb") as f:
@@ -89,7 +111,7 @@ class ScriptRunner:
             pass
 
     def _resolve_size(self) -> bool:
-        png = adb.screenshot(self.serial, self.emulator)
+        png = self._grab_screen()
         if not png:
             return False
         self.width, self.height = _png_size(png)
@@ -124,6 +146,146 @@ class ScriptRunner:
         x = int(round(float(nx) * (self.width - 1)))
         y = int(round(float(ny) * (self.height - 1)))
         return max(0, min(self.width - 1, x)), max(0, min(self.height - 1, y))
+
+    def _script_dir(self) -> str:
+        script_id = str(self.script.get("id") or "").strip()
+        if script_id:
+            return os.path.dirname(scripts.script_path(script_id))
+        return scripts.SCRIPTS_DIR
+
+    def _resolve_asset(self, value: str) -> str:
+        raw = str(value or "").strip().strip("\"'")
+        if not raw:
+            return ""
+        raw = raw.replace("/", os.sep)
+        if os.path.isabs(raw):
+            return raw
+        candidates = [
+            os.path.join(self._script_dir(), raw),
+            os.path.join(ROOT, raw),
+            os.path.join(scripts.SCRIPTS_DIR, raw),
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+        return candidates[0]
+
+    def _image_spec_path(self, spec: dict) -> str:
+        return self._resolve_asset(spec.get("image") or spec.get("template") or "")
+
+    def _as_visual_spec(self, value) -> dict:
+        if isinstance(value, str):
+            return {"image": value}
+        return value if isinstance(value, dict) else {}
+
+    def _wait_visual(self, value, label: str,
+                     default_timeout: float = DEFAULT_VISUAL_TIMEOUT) -> bool:
+        if value in (None, "", []):
+            return True
+        if isinstance(value, list):
+            return all(self._wait_visual(item, label, default_timeout)
+                       for item in value)
+        if isinstance(value, dict) and isinstance(value.get("all"), list):
+            return all(self._wait_visual(item, label, default_timeout)
+                       for item in value["all"])
+        if isinstance(value, dict) and isinstance(value.get("any"), list):
+            return any(self._wait_visual(item, label, default_timeout)
+                       for item in value["any"])
+
+        spec = self._as_visual_spec(value)
+        path = self._image_spec_path(spec)
+        if not path:
+            self._progress(f"{label} 缺少 image/template")
+            return False
+        timeout = _safe_float(spec.get("timeout"), default_timeout)
+        threshold = _safe_float(
+            spec.get("threshold"), image_match.DEFAULT_THRESHOLD)
+        interval = max(0.2, _safe_float(
+            spec.get("interval"), DEFAULT_MATCH_INTERVAL))
+        deadline = time.time() + max(0.0, timeout)
+        last = {"score": 0.0, "error": ""}
+        while True:
+            png = self._grab_screen()
+            if png:
+                last = image_match.match_template(
+                    png, path, threshold=threshold,
+                    region=spec.get("region"),
+                    scan_step=_safe_int(spec.get("scan_step"), 0) or None,
+                    max_points=_safe_int(spec.get("max_points"), 121))
+                if last.get("found"):
+                    return True
+            if timeout <= 0 or time.time() >= deadline:
+                break
+            time.sleep(interval)
+        base = os.path.basename(path)
+        score = last.get("score", 0.0)
+        err = f" ({last.get('error')})" if last.get("error") else ""
+        self._progress(
+            f"{label} 驗證失敗：找不到 {base} score={score}/{threshold}{err}")
+        return False
+
+    def _locate_template(self, step: dict) -> dict:
+        path = self._image_spec_path(step)
+        if not path:
+            return {"found": False, "score": 0.0,
+                    "error": "missing image/template"}
+        timeout = _safe_float(step.get("timeout"), DEFAULT_VISUAL_TIMEOUT)
+        threshold = _safe_float(
+            step.get("threshold"), image_match.DEFAULT_THRESHOLD)
+        interval = max(0.2, _safe_float(
+            step.get("interval"), DEFAULT_MATCH_INTERVAL))
+        deadline = time.time() + max(0.0, timeout)
+        last = {"found": False, "score": 0.0, "error": ""}
+        while True:
+            png = self._grab_screen()
+            if png:
+                last = image_match.match_template(
+                    png, path, threshold=threshold,
+                    region=step.get("region"),
+                    scan_step=_safe_int(step.get("scan_step"), 0) or None,
+                    max_points=_safe_int(step.get("max_points"), 121))
+                if last.get("found"):
+                    return last
+            if timeout <= 0 or time.time() >= deadline:
+                break
+            time.sleep(interval)
+        return last
+
+    def _precheck_visuals(self, step: dict) -> bool:
+        timeout = _safe_float(step.get("anchor_timeout"), DEFAULT_VISUAL_TIMEOUT)
+        if not self._wait_visual(step.get("anchor"), "anchor", timeout):
+            return False
+        if not self._wait_visual(step.get("scene"), "scene", timeout):
+            return False
+        return True
+
+    def _verify_until(self, step: dict) -> bool:
+        until = step.get("until")
+        if until in (None, "", []):
+            return True
+        timeout = _safe_float(step.get("until_timeout"), DEFAULT_UNTIL_TIMEOUT)
+        return self._wait_visual(until, "until", timeout)
+
+    def _tap_from_match(self, match: dict, step: dict) -> bool:
+        px = int(match.get("px", 0))
+        py = int(match.get("py", 0))
+        offset = step.get("tap_offset") or step.get("offset")
+        if isinstance(offset, dict):
+            dx = _safe_float(offset.get("x", offset.get("dx")), 0.0)
+            dy = _safe_float(offset.get("y", offset.get("dy")), 0.0)
+        elif isinstance(offset, (list, tuple)) and len(offset) == 2:
+            dx, dy = _safe_float(offset[0]), _safe_float(offset[1])
+        else:
+            dx = dy = 0.0
+        if abs(dx) <= 1 and abs(dy) <= 1:
+            px += int(round(dx * int(match.get("template_width", 1))))
+            py += int(round(dy * int(match.get("template_height", 1))))
+        else:
+            px += int(round(dx))
+            py += int(round(dy))
+        px = max(0, min(self.width - 1, px))
+        py = max(0, min(self.height - 1, py))
+        return adb.tap(self.serial, px, py, self.emulator)
 
     # ---- run ----
     def run(self) -> dict:
@@ -162,7 +324,7 @@ class ScriptRunner:
                 elapsed = round(time.time() - started, 1)
                 return {"ok": False, "steps_done": self.steps_done,
                         "total_steps": total, "elapsed": elapsed,
-                        "error": f"step {i}（{name}）執行失敗（adb 指令未成功）"}
+                        "error": f"step {i}（{name}）執行失敗（操作或畫面驗證未通過）"}
             self.steps_done = i
             wait_after = float(s.get("wait_after", 0) or 0)
             if wait_after > 0:
@@ -177,28 +339,64 @@ class ScriptRunner:
 
     def _exec_step(self, s: dict) -> bool:
         action = s.get("action")
+        if not self._precheck_visuals(s):
+            return False
+        ok = False
         if action == "wait":
             time.sleep(min(float(s.get("seconds", 1) or 1), 300))
-            return True
-        if action == "launch_app":
+            ok = True
+        elif action == "launch_app":
             package = s.get("package") or self.script.get("package")
             if not package:
-                return True   # nothing to launch is not a failure
-            return adb.launch_app(self.serial, package, self.emulator)
-        if action == "tap":
+                ok = True   # nothing to launch is not a failure
+            else:
+                ok = adb.launch_app(self.serial, package, self.emulator)
+        elif action == "tap":
             x, y = self._px(s["x"], s["y"])
-            return adb.tap(self.serial, x, y, self.emulator)
-        if action == "long_press":
+            ok = adb.tap(self.serial, x, y, self.emulator)
+        elif action == "tap_image":
+            match = self._locate_template(s)
+            if not match.get("found"):
+                self._progress(
+                    f"tap_image 找不到模板：score={match.get('score', 0.0)}/"
+                    f"{match.get('threshold', s.get('threshold', image_match.DEFAULT_THRESHOLD))}"
+                    f"{' ' + match.get('error', '') if match.get('error') else ''}")
+                return False
+            ok = self._tap_from_match(match, s)
+        elif action == "tap_scene":
+            if s.get("image") or s.get("template"):
+                match = self._locate_template(s)
+                if not match.get("found"):
+                    self._progress(
+                        f"tap_scene 找不到模板：score={match.get('score', 0.0)}/"
+                        f"{match.get('threshold', s.get('threshold', image_match.DEFAULT_THRESHOLD))}"
+                        f"{' ' + match.get('error', '') if match.get('error') else ''}")
+                    return False
+                ok = self._tap_from_match(match, s)
+            else:
+                x, y = self._px(s["x"], s["y"])
+                ok = adb.tap(self.serial, x, y, self.emulator)
+        elif action == "wait_scene":
+            if s.get("image") or s.get("template"):
+                ok = self._wait_visual(s, "wait_scene", _safe_float(
+                    s.get("timeout"), DEFAULT_UNTIL_TIMEOUT))
+            else:
+                ok = self._wait_visual(
+                    s.get("scene") or s.get("anchor"), "wait_scene",
+                    _safe_float(s.get("timeout"), DEFAULT_UNTIL_TIMEOUT))
+        elif action == "long_press":
             x, y = self._px(s["x"], s["y"])
             ms = max(400, int(s.get("duration_ms", 600)))
             # same-point swipe with duration = long press
-            return adb.swipe(self.serial, x, y, x, y, ms, self.emulator)
-        if action == "swipe":
+            ok = adb.swipe(self.serial, x, y, x, y, ms, self.emulator)
+        elif action == "swipe":
             x1, y1 = self._px(s["x1"], s["y1"])
             x2, y2 = self._px(s["x2"], s["y2"])
             ms = max(100, int(s.get("duration_ms", 300)))
-            return adb.swipe(self.serial, x1, y1, x2, y2, ms, self.emulator)
-        return False
+            ok = adb.swipe(self.serial, x1, y1, x2, y2, ms, self.emulator)
+        if not ok:
+            return False
+        return self._verify_until(s)
 
 
 def run_script_job(script_id: str = "", job_id: str | None = None,

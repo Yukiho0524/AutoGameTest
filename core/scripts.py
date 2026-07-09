@@ -15,10 +15,15 @@ Script schema:
     generated_by: codex | draft           # draft = AI 註解失敗、僅確定性骨架
     created: 2026-07-09 14:00:00
     steps:
-      - action: tap | long_press | swipe | wait | launch_app
+      - action: tap | tap_image | tap_scene | long_press | swipe | wait | wait_scene | launch_app
         name: 點擊 出擊按鈕
         x: 0.5004        # tap/long_press：正規化座標 (0~1)
         y: 0.5007
+        image: assets/foo/button.png  # tap_image/tap_scene/wait_scene：按鈕或畫面模板
+        threshold: 0.88  # 圖片比對門檻
+        anchor: assets/foo/main.png   # 操作前需先看到的畫面/錨點
+        scene: assets/foo/main.png    # 同 anchor，偏語意名稱
+        until: assets/foo/done.png    # 操作後需等到的畫面/錨點
         duration_ms: 500  # long_press/swipe
         x1: ... y1: ... x2: ... y2: ...   # swipe
         seconds: 2.0      # wait
@@ -44,7 +49,13 @@ SCRIPTS_DIR = os.path.join(ROOT, "data", "scripts")
 
 _lock = threading.Lock()
 
-VALID_ACTIONS = {"tap", "long_press", "swipe", "wait", "launch_app"}
+VALID_ACTIONS = {
+    "tap", "tap_image", "tap_scene", "long_press", "swipe", "wait",
+    "wait_scene", "launch_app",
+}
+VISION_ACTIONS = {"tap_image", "tap_scene", "wait_scene"}
+VISUAL_FIELDS = ("anchor", "scene", "until")
+IMAGE_FIELDS = ("image", "template")
 
 
 def _slug(text: str) -> str:
@@ -71,6 +82,11 @@ def list_scripts() -> list[dict]:
         risk_count = sum(
             1 for step in steps
             if isinstance(step, dict) and step.get("risk"))
+        vision_count = sum(
+            1 for step in steps
+            if isinstance(step, dict) and (
+                step.get("action") in VISION_ACTIONS
+                or any(step.get(k) for k in VISUAL_FIELDS)))
         rows.append({
             "id": data.get("id", fn.rsplit(".", 1)[0]),
             "name": data.get("name", fn),
@@ -83,6 +99,7 @@ def list_scripts() -> list[dict]:
             "created": data.get("created", ""),
             "n_steps": len(steps),
             "risk_count": risk_count,
+            "vision_count": vision_count,
         })
     return sorted(rows, key=lambda r: r.get("created", ""), reverse=True)
 
@@ -131,17 +148,61 @@ def validate_script(data: dict) -> str:
         action = s.get("action")
         if action not in VALID_ACTIONS:
             return f"step {i + 1} 動作不支援: {action}"
+        for field in VISUAL_FIELDS:
+            err = _validate_visual_spec(s.get(field), i + 1, field)
+            if err:
+                return err
         if action in ("tap", "long_press"):
             for k in ("x", "y"):
                 v = s.get(k)
                 if not isinstance(v, (int, float)) or not (0 <= float(v) <= 1):
                     return f"step {i + 1} 缺少正規化座標 {k}（0~1）"
+        if action == "tap_image":
+            if not _has_image_spec(s):
+                return f"step {i + 1} tap_image 需要 image/template"
+        if action == "tap_scene":
+            has_target = _has_image_spec(s)
+            has_coord = all(isinstance(s.get(k), (int, float))
+                            and 0 <= float(s.get(k)) <= 1 for k in ("x", "y"))
+            if not has_target and not has_coord:
+                return f"step {i + 1} tap_scene 需要 image/template 或 x/y"
+            if not (s.get("anchor") or s.get("scene")):
+                return f"step {i + 1} tap_scene 需要 anchor 或 scene 驗證"
+        if action == "wait_scene":
+            if not (_has_image_spec(s) or s.get("anchor") or s.get("scene")):
+                return f"step {i + 1} wait_scene 需要 image/template/anchor/scene"
         if action == "swipe":
             for k in ("x1", "y1", "x2", "y2"):
                 v = s.get(k)
                 if not isinstance(v, (int, float)) or not (0 <= float(v) <= 1):
                     return f"step {i + 1} 缺少正規化座標 {k}（0~1）"
     return ""
+
+
+def _has_image_spec(value: dict) -> bool:
+    return any(isinstance(value.get(k), str) and value.get(k).strip()
+               for k in IMAGE_FIELDS)
+
+
+def _validate_visual_spec(value, step_no: int, field: str) -> str:
+    if value in (None, "", []):
+        return ""
+    if isinstance(value, str):
+        return "" if value.strip() else f"step {step_no} {field} 是空字串"
+    if isinstance(value, list):
+        for j, item in enumerate(value, 1):
+            err = _validate_visual_spec(item, step_no, f"{field}[{j}]")
+            if err:
+                return err
+        return ""
+    if not isinstance(value, dict):
+        return f"step {step_no} {field} 必須是字串、物件或列表"
+    if _has_image_spec(value):
+        return ""
+    nested = value.get("all") or value.get("any")
+    if isinstance(nested, list):
+        return _validate_visual_spec(nested, step_no, field)
+    return f"step {step_no} {field} 需要 image/template"
 
 
 def save_script(data: dict, script_id: str | None = None) -> dict:

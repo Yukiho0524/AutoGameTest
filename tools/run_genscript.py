@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -38,7 +39,7 @@ try:
 except ImportError:
     yaml = None
 
-ARTIFACTS_DIR = os.path.join(ROOT, "data", "artifacts")
+SCRIPT_ASSETS_DIR = os.path.join(ROOT, "data", "scripts", "assets")
 
 # how far before the recorded tap time to grab the frame (screenrecord lag)
 FRAME_LAG = 0.45
@@ -74,6 +75,69 @@ def extract_keyframes(source: str, taps: list[dict], out_dir: str) -> list[str]:
     return saved
 
 
+def extract_touch_templates(frames: list[str], taps: list[dict],
+                            out_dir: str) -> list[str]:
+    """Crop a small visual target around each recorded tap for tap_image."""
+    try:
+        import cv2  # noqa: PLC0415
+    except ImportError:
+        return []
+    if not frames:
+        return []
+    os.makedirs(out_dir, exist_ok=True)
+    saved: list[str] = []
+    for frame_path in frames:
+        idx = _tap_index_from_frame(frame_path)
+        if idx < 0 or idx >= len(taps):
+            continue
+        tap = taps[idx]
+        if tap.get("kind") == "swipe":
+            continue
+        frame = cv2.imread(frame_path)
+        if frame is None:
+            continue
+        h, w = frame.shape[:2]
+        try:
+            cx = int(float(tap.get("nx")) * w)
+            cy = int(float(tap.get("ny")) * h)
+        except (TypeError, ValueError):
+            continue
+        half_w = max(36, min(180, int(w * 0.09)))
+        half_h = max(28, min(120, int(h * 0.08)))
+        x1, x2 = max(0, cx - half_w), min(w, cx + half_w)
+        y1, y2 = max(0, cy - half_h), min(h, cy + half_h)
+        if x2 - x1 < 12 or y2 - y1 < 12:
+            continue
+        path = os.path.join(out_dir, f"tap{idx:02d}_template.png")
+        if cv2.imwrite(path, frame[y1:y2, x1:x2]):
+            saved.append(path)
+    return saved
+
+
+def _tap_index_from_frame(path: str) -> int:
+    base = os.path.basename(path)
+    digits = "".join(ch for ch in base if ch.isdigit())
+    try:
+        return int(digits)
+    except ValueError:
+        return -1
+
+
+def _relative_path(path: str) -> str:
+    try:
+        return os.path.relpath(path, ROOT).replace(os.sep, "/")
+    except ValueError:
+        return path
+
+
+def _asset_dir_for(source: str, job_id: str | None) -> str:
+    base = os.path.basename(os.path.normpath(source)) or "recording"
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_"
+                   for ch in base)
+    suffix = job_id or time.strftime("%Y%m%d_%H%M%S")
+    return os.path.join(SCRIPT_ASSETS_DIR, f"{safe}_{suffix}")
+
+
 def _video_parts(source: str) -> list[str]:
     if os.path.isfile(source):
         return [source]
@@ -104,10 +168,14 @@ def _frame_at(cv2, metas, t: float):
 
 
 def build_generation_prompt(taps: list[dict], frames: list[str],
+                            templates: list[str],
                             meta: dict) -> str:
     frame_lines = "\n".join(
-        f"- taps[{int(os.path.basename(p)[3:5])}] 觸控前畫面：{p}"
+        f"- taps[{_tap_index_from_frame(p)}] 觸控前畫面：{p}"
         for p in frames) or "（無關鍵幀可用，請依 taps 的時間與座標推理）"
+    template_lines = "\n".join(
+        f"- taps[{_tap_index_from_frame(p)}] 可點擊模板：{_relative_path(p)}"
+        for p in templates) or "（無模板圖可用，才使用座標重放）"
     return f"""你是遊戲自動化腳本產生器。使用者錄了一段親手示範的遊戲操作，以下是錄影期間 getevent 實測到的**每一次觸控原始資料**（taps.json）與每次觸控前的畫面截圖。請你**完整計算並產出可重放的腳本 YAML**。
 
 # 觸控原始資料（taps.json，時間單位秒，nx/ny 為 0~1 正規化座標）
@@ -118,23 +186,33 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 # 每次觸控前的畫面截圖（用你的工具開圖檢視，理解每一步在點什麼）
 {frame_lines}
 
+# 已裁切的按鈕/點擊模板（用於 tap_image / tap_scene）
+{template_lines}
+
 # 腳本 schema（你要輸出的格式）
 - 頂層欄位：`name`（腳本名）、`description`（這段流程在做什麼）、`steps`（動作序列）
 - steps 支援的 action：
   - `tap`：欄位 x, y（**必須直接取自對應 tap 的 nx/ny，不得自行估計**）
+  - `tap_image`：欄位 image/template（使用上方模板路徑做圖片比對，找到後點擊模板中心），可加 threshold/timeout/region
+  - `tap_scene`：先用 anchor/scene 驗證目前畫面，再用 image/template 點擊；沒有 image 時才退回 x/y
   - `long_press`：x, y, duration_ms
   - `swipe`：x1, y1, x2, y2（取自 nx/ny 與 end_nx/end_ny）, duration_ms
   - `wait`：seconds（純等待步驟）
+  - `wait_scene`：等待 image/template 或 scene/anchor 出現
 - 每步可帶：`name`（具體中文名稱，例「點擊 出擊按鈕」）、`wait_after`（該步後等待秒數）
+- 每步可帶畫面驗證：`anchor` / `scene`（操作前必須出現的模板）、`until`（操作後必須等到的模板）
+- 圖片比對欄位可用：`image` 或 `template`、`threshold`（建議 0.86~0.92）、`timeout`、`region: [x1, y1, x2, y2]`
 
 # 生成規則（比照 GameTestAi 的精神）
 1. 依 taps 時間順序轉成 steps；kind 對應 action（tap/long_press/swipe）。
-2. 兩次觸控的實際間隔反映成前一步的 `wait_after`（間隔近取 1~2 秒；有載入/轉場依畫面判斷加長，上限 90；不要把實測 30 秒以上的載入硬砍成 30）。
-3. 看截圖判斷：若某次觸控落在過場/載入畫面（畫面模糊、無穩定按鈕），該點很可能是使用者在等待時的無意義點擊——改成 `wait` 步驟並在 name 註明，不要保留成 tap。
-4. 每步命名要具體（看圖說出點的是什麼按鈕/區域），不要只寫「點擊」。
-5. 若某步畫面涉及 登入/帳密/付費/購買/轉蛋/PVP 排位：保留該步但加 `risk: true` 與 `risk_reason`，name 前加「⚠ 」。
-6. `description` 用一兩句話總結整段流程的目的。
-7. 座標鐵則：所有 x/y/x1/y1/x2/y2 一律照抄 taps.json 的正規化值，禁止修改或發明座標。
+2. 若該 tap 有「已裁切模板」，穩定按鈕/圖示/可重複 UI 優先產生 `tap_image`，image/template 路徑必須照抄上方模板路徑；只有模板不穩或畫面過場才使用 `tap`。
+3. 重要步驟請加 `until` 驗證下一個畫面；容易誤點的步驟請加 `anchor` 或 `scene` 驗證目前畫面。
+4. 兩次觸控的實際間隔反映成前一步的 `wait_after`（間隔近取 1~2 秒；有載入/轉場依畫面判斷加長，上限 90；不要把實測 30 秒以上的載入硬砍成 30）。
+5. 看截圖判斷：若某次觸控落在過場/載入畫面（畫面模糊、無穩定按鈕），該點很可能是使用者在等待時的無意義點擊——改成 `wait` 或 `wait_scene` 步驟並在 name 註明，不要保留成 tap。
+6. 每步命名要具體（看圖說出點的是什麼按鈕/區域），不要只寫「點擊」。
+7. 若某步畫面涉及 登入/帳密/付費/購買/轉蛋/PVP 排位：保留該步但加 `risk: true` 與 `risk_reason`，name 前加「⚠ 」。
+8. `description` 用一兩句話總結整段流程的目的。
+9. 座標鐵則：所有 x/y/x1/y1/x2/y2 一律照抄 taps.json 的正規化值，禁止修改或發明座標。
 
 # 輸出格式（最終回覆務必包含此區塊，區塊內只放 YAML）
 AUTOGAMETEST_SCRIPT_YAML:
@@ -142,10 +220,12 @@ AUTOGAMETEST_SCRIPT_YAML:
 name: ...
 description: ...
 steps:
-  - action: tap
+  - action: tap_image
     name: ...
-    x: 0.5004
-    y: 0.4172
+    image: data/scripts/assets/.../templates/tap00_template.png
+    threshold: 0.88
+    timeout: 12
+    until: data/scripts/assets/.../templates/tap01_template.png
     wait_after: 2.0
 ```
 
@@ -170,6 +250,74 @@ def extract_script_yaml(text: str) -> dict | None:
         return data if isinstance(data, dict) else None
     except yaml.YAMLError:
         return None
+
+
+def _has_image_spec(data: dict) -> bool:
+    return any(isinstance(data.get(k), str) and data.get(k).strip()
+               for k in ("image", "template"))
+
+
+def _clean_visual_value(value):
+    if value in (None, "", []):
+        return None
+    if isinstance(value, str):
+        return value.strip()[:500]
+    if isinstance(value, list):
+        items = [_clean_visual_value(v) for v in value]
+        return [v for v in items if v is not None]
+    if isinstance(value, dict):
+        out = {}
+        for key in ("image", "template"):
+            if isinstance(value.get(key), str) and value.get(key).strip():
+                out[key] = value[key].strip()[:500]
+        for key in ("threshold", "timeout", "interval", "scan_step", "max_points"):
+            if isinstance(value.get(key), (int, float)):
+                out[key] = value[key]
+        if isinstance(value.get("region"), (list, tuple)) and len(value["region"]) == 4:
+            try:
+                out["region"] = [float(v) for v in value["region"]]
+            except (TypeError, ValueError):
+                pass
+        for key in ("all", "any"):
+            if isinstance(value.get(key), list):
+                nested = [_clean_visual_value(v) for v in value[key]]
+                nested = [v for v in nested if v is not None]
+                if nested:
+                    out[key] = nested
+        return out or None
+    return None
+
+
+def _copy_visual_fields(src: dict, dst: dict) -> None:
+    for key in ("image", "template"):
+        if isinstance(src.get(key), str) and src.get(key).strip():
+            dst[key] = src[key].strip()[:500]
+    for key in ("threshold", "timeout", "interval", "scan_step",
+                "max_points", "anchor_timeout", "until_timeout"):
+        if isinstance(src.get(key), (int, float)):
+            dst[key] = src[key]
+    if isinstance(src.get("region"), (list, tuple)) and len(src["region"]) == 4:
+        try:
+            dst["region"] = [float(v) for v in src["region"]]
+        except (TypeError, ValueError):
+            pass
+    if isinstance(src.get("tap_offset"), (list, tuple)) and len(src["tap_offset"]) == 2:
+        try:
+            dst["tap_offset"] = [float(src["tap_offset"][0]), float(src["tap_offset"][1])]
+        except (TypeError, ValueError):
+            pass
+    elif isinstance(src.get("tap_offset"), dict):
+        try:
+            dst["tap_offset"] = {
+                "x": float(src["tap_offset"].get("x", src["tap_offset"].get("dx", 0))),
+                "y": float(src["tap_offset"].get("y", src["tap_offset"].get("dy", 0))),
+            }
+        except (TypeError, ValueError):
+            pass
+    for key in ("anchor", "scene", "until"):
+        clean = _clean_visual_value(src.get(key))
+        if clean is not None:
+            dst[key] = clean
 
 
 def sanitize_generated(data: dict, taps: list[dict], meta: dict) -> tuple[dict, str]:
@@ -211,6 +359,24 @@ def sanitize_generated(data: dict, taps: list[dict], meta: dict) -> tuple[dict, 
             secs = s.get("seconds", 2)
             out["seconds"] = round(min(max(float(secs), 0.2), 60), 1) \
                 if isinstance(secs, (int, float)) else 2.0
+        elif action in ("tap_image", "tap_scene", "wait_scene"):
+            _copy_visual_fields(s, out)
+            if action == "tap_image" and not _has_image_spec(out):
+                return {}, f"step {i+1} tap_image 缺少 image/template"
+            if action == "tap_scene":
+                has_image = _has_image_spec(out)
+                has_coord = isinstance(s.get("x"), (int, float)) and isinstance(s.get("y"), (int, float))
+                if has_coord:
+                    if not coord_ok(s["x"], s["y"]):
+                        return {}, f"step {i+1} tap_scene 座標不在錄影實測觸控中"
+                    out["x"], out["y"] = round(float(s["x"]), 4), round(float(s["y"]), 4)
+                if not has_image and not has_coord:
+                    return {}, f"step {i+1} tap_scene 缺少 image/template 或錄影座標"
+                if not (out.get("anchor") or out.get("scene")):
+                    return {}, f"step {i+1} tap_scene 缺少 anchor 或 scene"
+            if action == "wait_scene" and not (
+                    _has_image_spec(out) or out.get("anchor") or out.get("scene")):
+                return {}, f"step {i+1} wait_scene 缺少 image/template/anchor/scene"
         elif action in ("tap", "long_press"):
             x, y = s.get("x"), s.get("y")
             if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
@@ -280,16 +446,21 @@ def generate(source: str, name: str = "", package: str = "",
             "emulator": emulator or "ldplayer"}
 
     frames: list[str] = []
+    templates: list[str] = []
     if job_id:
         progress("從影片抽取每步觸控前的關鍵幀…")
+        asset_dir = _asset_dir_for(source, job_id)
         frames = extract_keyframes(
-            source, taps, os.path.join(ARTIFACTS_DIR, job_id))
-    progress(f"共 {len(taps)} 次觸控、{len(frames)} 張關鍵幀，"
+            source, taps, os.path.join(asset_dir, "frames"))
+        templates = extract_touch_templates(
+            frames, taps, os.path.join(asset_dir, "templates"))
+    progress(f"共 {len(taps)} 次觸控、{len(frames)} 張關鍵幀、"
+             f"{len(templates)} 張模板，"
              "交給 Codex 完整生成腳本…")
 
     generated = None
     detail = ""
-    prompt = build_generation_prompt(taps, frames, meta)
+    prompt = build_generation_prompt(taps, frames, templates, meta)
     try:
         result = ai_runner.run_with_fallback(
             prompt, cwd=ROOT, timeout=timeout, engine="codex",
@@ -329,6 +500,7 @@ def generate(source: str, name: str = "", package: str = "",
         "n_steps": len(saved.get("steps", [])),
         "annotated": annotated,
         "frames": len(frames),
+        "templates": len(templates),
         "detail": "" if annotated else f"以草稿骨架儲存（{detail or 'Codex 未產出'}）",
     })
 

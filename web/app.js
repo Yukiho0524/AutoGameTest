@@ -408,11 +408,15 @@ async function loadScripts() {
     const riskBadge = Number(s.risk_count || 0) > 0
       ? `<span class="badge warn">高風險 ${Number(s.risk_count || 0)}</span>`
       : "";
+    const visionBadge = Number(s.vision_count || 0) > 0
+      ? `<span class="badge ok">圖片匹配 ${Number(s.vision_count || 0)}</span>`
+      : "";
     div.innerHTML = `
       <h3>${esc(s.name)}</h3>
       <div class="meta">
         ${genBadge}
         ${riskBadge}
+        ${visionBadge}
         <span class="badge">${s.n_steps} 步</span>
         <span class="badge">${esc(s.emulator || "")}</span>
       </div>
@@ -440,7 +444,7 @@ function jobKindLabel(kind) {
     learn: "📖 學習",
     run_agent: "🕹 執行 Agent",
     genscript: "🎬 生成腳本（AI）",
-    run_script: "▶ 執行腳本（無 AI）",
+    run_script: "▶ 執行腳本（ADB）",
   }[kind] || `🧩 ${kind}`;
 }
 
@@ -501,7 +505,7 @@ async function runScript(id) {
     body: JSON.stringify({ allow_risk: riskCount > 0 }),
   });
   alert(job.spawned
-    ? `已開始執行腳本（任務 #${job.id}，純 ADB 重放、不用 AI）。\n進度與每步截圖見任務佇列。`
+    ? `已開始執行腳本（任務 #${job.id}，ADB 圖片/座標重放、不用 AI）。\n進度與每步截圖見任務佇列。`
     : `任務 #${job.id} 未能自動啟動執行器。`);
 }
 
