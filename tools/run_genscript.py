@@ -232,7 +232,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 - 每步可帶畫面驗證：`anchor` / `scene`（操作前必須出現的模板）、`until`（操作後必須等到的模板）
 - 圖片比對欄位可用：`image` 或 `template`、`threshold`（建議 0.6~0.8，預設 0.72）、`timeout`、`region: [x1, y1, x2, y2]`
 - Airtest-like 欄位：`record_pos`（相對畫面中心位置）、`resolution`（錄製解析度）、`target_pos`（1~9 九宮格點擊位置，5=中心）、`rgb`（預設 false，灰階比對）
-- 若一個按鈕可能有多種外觀，可用 `templates: [{image, record_pos, resolution, target_pos, threshold, rgb}, ...]`
+- 若一個按鈕可能有多種外觀，可用 `templates: [{{image, record_pos, resolution, target_pos, threshold, rgb}}, ...]`
 
 # 生成規則（比照 GameTestAi 的精神）
 1. 依 taps 時間順序轉成 steps；kind 對應 action（tap/long_press/swipe）。
