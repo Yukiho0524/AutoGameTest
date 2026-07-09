@@ -53,7 +53,7 @@ python tools/doctor.py
 然後開 http://127.0.0.1:8777 。七個分頁：
 
 - **遊戲庫**：新增/編輯遊戲。填 exe 路徑按「偵測平台」會自動判斷 Steam/Epic/Xbox/PC 並讀出 Steam AppID；模擬器遊戲則選 Android、按「列出已安裝」挑 package。每款遊戲可貼攻略網址送出「學習」任務。
-- **模擬器操控**：即時顯示模擬器畫面，**點畫面就等於送 tap 到模擬器**（透過 ADB，不佔用你的實體滑鼠鍵盤）。可開自動更新。
+- **模擬器操控**：即時顯示模擬器畫面，**點畫面就等於送 tap 到模擬器**（透過 ADB，不佔用你的實體滑鼠鍵盤）。可開自動更新。下方有**錄影列**：按「⏺ 開始錄影」把模擬器畫面錄成 mp4（`adb screenrecord`，單段上限 180 秒、超過自動無縫接段），存檔位置可自訂並會記住（留空 = `data\recordings`），可勾選是否錄下觸控點，「開啟資料夾」直接跳到存檔位置。單段輸出 `rec_<時間>.mp4`；超過 180 秒輸出 `rec_<時間>/part01.mp4...` + `session.json`（與 GameTestAi 抽幀工具相容的格式）。
 - **Agent**：建立綁定某遊戲的代打 agent（預設玩家人格 + 指令），可儲存、重複執行。
 - **任務佇列**：學習與執行 agent 產生的任務清單。可點單筆查看詳情（payload、結果、stdout/stderr log），並手動清除單筆／已完成／全部。
 - **排程表**：週一到週日、24 小時直條行事曆。把右側 Agent 拖到指定星期與整點，按「儲存排程」後，只要控制台保持執行，未來每週固定時間會自動建立並執行該 Agent 任務。
@@ -89,6 +89,7 @@ core/
   platforms.py           # 從 exe 路徑偵測平台 + 讀 Steam AppID
   launcher.py            # 依平台啟動遊戲（協定 / exe / ADB）
   adb.py                 # 模擬器（LDPlayer / BlueStacks）ldconsole + adb 封裝
+  recorder.py            # 模擬器畫面錄影（screenrecord 分段自動接續，搬自 GameTestAi）
   config.py              # 讀 config/local.json 與環境變數（本機路徑覆寫）
   fast_agent.py          # 模擬器 agent 的本地快速判斷層（比對安全規則秒處理）
   visual_memory.py       # 圖片記憶（畫面 signature、狀態、風險標記）
@@ -111,6 +112,7 @@ data/
   fast_rules/<game>.json # 各遊戲的安全快速規則
   visual_memory/<game>/  # 圖片記憶（memory.json + images/）
   artifacts/<job>/       # 每次執行的截圖產物
+  recordings/            # 模擬器錄影輸出（預設位置，可在錄影列自訂）
   logs/                  # 執行 stdout/stderr 與診斷日誌
 .codex/
   skills/<遊戲名>/SKILL.md    # 遊戲知識庫

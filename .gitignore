@@ -3,6 +3,7 @@ __pycache__/
 data/jobs/
 data/logs/
 data/artifacts/
+data/recordings/
 data/settings.json
 config/local.json
 *.tmp

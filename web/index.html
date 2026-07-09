@@ -132,6 +132,15 @@
       <label><input type="checkbox" id="auto-refresh"> 自動更新 (2s)</label>
       <span class="hint">點擊畫面 = 送出 tap 到模擬器（繞過實體滑鼠鍵盤）</span>
     </div>
+    <div class="control-bar record-bar">
+      <button id="rec-toggle">⏺ 開始錄影</button>
+      <label class="rec-dir-label">存檔位置
+        <input id="rec-dir" placeholder="留空 = data\recordings">
+      </label>
+      <button id="rec-open-dir" class="small">開啟資料夾</button>
+      <label><input type="checkbox" id="rec-touches" checked> 錄下觸控點</label>
+      <span class="hint" id="rec-status"></span>
+    </div>
     <div id="screen-wrap">
       <img id="screen" alt="模擬器畫面" />
       <p class="hint" id="screen-status">選擇裝置後按「重新截圖」</p>

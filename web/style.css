@@ -228,3 +228,16 @@ button.small { padding: 4px 10px; font-size: 12px; }
   .jobs-layout, .diagnostics-layout, .diagnostics-summary, .settings-layout { grid-template-columns: 1fr; }
   .job-detail, .diagnostics-side { position: static; }
 }
+
+/* ---- emulator recording bar ---- */
+.record-bar { margin-top: -4px; }
+.rec-dir-label { flex: 1; min-width: 260px; }
+.rec-dir-label input { width: 100%; margin-top: 2px; }
+#rec-toggle.recording {
+  background: var(--danger); border-color: var(--danger); color: #fff;
+  animation: rec-pulse 1.6s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}

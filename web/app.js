@@ -219,6 +219,7 @@ async function loadInstances() {
     o.textContent = `${emulatorLabel(o.dataset.emulator)} [${i.index}] ${i.title} ${serial} ${i.running ? "▶ 執行中" : "⏸ 未啟動"}`;
     sel.appendChild(o);
   });
+  loadRecordStatus();
 }
 $("#refresh-shot").onclick = refreshShot;
 function refreshShot() {
@@ -249,6 +250,100 @@ let autoTimer = null;
 $("#auto-refresh").onchange = (e) => {
   clearInterval(autoTimer);
   if (e.target.checked) autoTimer = setInterval(refreshShot, 2000);
+};
+
+// ---------- emulator recording ----------
+let recTimer = null;
+
+function fmtElapsed(sec) {
+  const s = Math.max(0, Math.round(sec));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function setRecUI(recording) {
+  const btn = $("#rec-toggle");
+  btn.textContent = recording ? "⏹ 停止錄影" : "⏺ 開始錄影";
+  btn.classList.toggle("recording", recording);
+  $("#rec-dir").disabled = recording;
+  $("#rec-touches").disabled = recording;
+}
+
+async function loadRecordStatus() {
+  const serial = $("#serial-sel").value;
+  const st = await api(`/api/emulator/record/status?serial=${encodeURIComponent(serial || "")}`);
+  if (!$("#rec-dir").value && st.default_dir) $("#rec-dir").value = st.default_dir;
+  setRecUI(st.recording);
+  if (st.recording) {
+    $("#rec-status").textContent = `錄影中 ${fmtElapsed(st.elapsed)}（第 ${st.parts} 段）→ ${st.save_dir}`;
+    startRecPoll();
+  } else if (st.error) {
+    $("#rec-status").textContent = `錄影異常：${st.error}`;
+  }
+}
+
+function startRecPoll() {
+  clearInterval(recTimer);
+  recTimer = setInterval(async () => {
+    const serial = $("#serial-sel").value;
+    const st = await api(`/api/emulator/record/status?serial=${encodeURIComponent(serial || "")}`);
+    if (st.recording) {
+      $("#rec-status").textContent = `錄影中 ${fmtElapsed(st.elapsed)}（第 ${st.parts} 段）→ ${st.save_dir}`;
+    } else {
+      clearInterval(recTimer);
+      setRecUI(false);
+      if (st.error) $("#rec-status").textContent = `錄影異常：${st.error}`;
+    }
+  }, 2000);
+}
+
+$("#rec-toggle").onclick = async () => {
+  const serial = $("#serial-sel").value;
+  if (!serial) { alert("請先選擇裝置"); return; }
+  const emulator = $("#serial-sel").selectedOptions[0]?.dataset.emulator || "";
+  const btn = $("#rec-toggle");
+  if (btn.classList.contains("recording")) {
+    btn.disabled = true;
+    $("#rec-status").textContent = "收尾中（等待最後片段寫檔）…";
+    const r = await api("/api/emulator/record/stop", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serial }),
+    });
+    btn.disabled = false;
+    clearInterval(recTimer);
+    setRecUI(false);
+    if (r.ok) {
+      const where = r.video || r.dir;
+      $("#rec-status").textContent =
+        `已儲存（${fmtElapsed(r.elapsed)}，${r.n_parts} 段）：${where}`;
+    } else {
+      $("#rec-status").textContent = `錄影失敗：${r.error || "未知錯誤"}`;
+    }
+  } else {
+    const r = await api("/api/emulator/record/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        serial, emulator,
+        save_dir: $("#rec-dir").value.trim(),
+        show_touches: $("#rec-touches").checked,
+      }),
+    });
+    if (r.ok) {
+      $("#rec-dir").value = r.save_dir;
+      setRecUI(true);
+      $("#rec-status").textContent = `錄影中 00:00 → ${r.save_dir}`;
+      startRecPoll();
+    } else {
+      $("#rec-status").textContent = `無法開始：${r.error || "未知錯誤"}`;
+    }
+  }
+};
+
+$("#rec-open-dir").onclick = async () => {
+  const r = await api("/api/emulator/record/open-folder", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dir: $("#rec-dir").value.trim() }),
+  });
+  if (!r.ok) $("#rec-status").textContent = r.error || "無法開啟資料夾";
 };
 
 // ---------- agents ----------

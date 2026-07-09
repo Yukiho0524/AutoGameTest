@@ -16,6 +16,7 @@ SKILLS_DIR = os.path.join(ROOT, ".codex", "skills")
 AGENTS_DIR = os.path.join(ROOT, ".codex", "agents")
 DEFAULT_SETTINGS = {
     "ai_timeout_seconds": 3600,
+    "recording_dir": "",
 }
 
 _lock = threading.Lock()
@@ -298,6 +299,7 @@ def _clean_settings(settings: dict | None) -> dict:
     except (TypeError, ValueError):
         timeout = DEFAULT_SETTINGS["ai_timeout_seconds"]
     clean["ai_timeout_seconds"] = max(60, min(86400, timeout))
+    clean["recording_dir"] = str(clean.get("recording_dir", "") or "").strip()
     return clean
 
 

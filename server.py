@@ -22,7 +22,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from core import store, platforms, launcher, adb, config
+from core import store, platforms, launcher, adb, config, recorder
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 _CREATE_NO_WINDOW = 0x08000000
@@ -559,6 +559,12 @@ class Handler(BaseHTTPRequestHandler):
             emulator = q.get("emulator", [None])[0]
             serial = q.get("serial", [adb.serial_for(0, emulator)])[0]
             return self._json({"packages": adb.list_packages(serial, emulator=emulator)})
+        if p == "/api/emulator/record/status":
+            serial = q.get("serial", [None])[0]
+            st = recorder.status(serial)
+            saved = store.get_settings().get("recording_dir", "")
+            st["default_dir"] = saved or recorder.DEFAULT_SAVE_DIR
+            return self._json(st)
         if p == "/api/emulator/screenshot":
             adb.reload_config_paths()
             emulator = q.get("emulator", [None])[0]
@@ -609,6 +615,35 @@ class Handler(BaseHTTPRequestHandler):
             adb.reload_config_paths()
             adb.launch_instance(int(b.get("index", 0)), b.get("emulator"))
             return self._json({"ok": True})
+        if p == "/api/emulator/record/start":
+            adb.reload_config_paths()
+            emulator = b.get("emulator")
+            serial = b.get("serial") or adb.serial_for(0, emulator)
+            res = recorder.start_recording(
+                serial, emulator, b.get("save_dir"),
+                show_touches=bool(b.get("show_touches", True)))
+            if res.get("ok") and res.get("save_dir"):
+                # remember the folder so next recording prefills it
+                settings = store.get_settings()
+                settings["recording_dir"] = res["save_dir"]
+                store.save_settings(settings)
+            return self._json(res)
+        if p == "/api/emulator/record/stop":
+            serial = b.get("serial") or ""
+            if not serial:
+                st = recorder.status(None)
+                serial = st.get("serial", "")
+            return self._json(recorder.stop_recording(serial))
+        if p == "/api/emulator/record/open-folder":
+            folder = recorder.resolve_save_dir(
+                b.get("dir") or store.get_settings().get("recording_dir", ""))
+            if not os.path.isdir(folder):
+                return self._json({"ok": False, "error": f"資料夾不存在：{folder}"})
+            try:
+                os.startfile(folder)  # opens Windows Explorer locally
+                return self._json({"ok": True, "dir": folder})
+            except OSError as e:
+                return self._json({"ok": False, "error": str(e)})
         m = re.match(r"^/api/games/([^/]+)/learn$", p)
         if m:
             job = store.enqueue_job("learn", {
