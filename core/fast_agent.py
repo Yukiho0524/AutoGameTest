@@ -370,7 +370,7 @@ def _execute_action(action: dict, serial: str, emulator: str, package: str) -> t
 
 
 def _screenshot_with_retry(serial: str, emulator: str,
-                           attempts: int = 3, wait: float = 0.8) -> bytes | None:
+                           attempts: int = 2, wait: float = 0.5) -> bytes | None:
     attempts = max(1, attempts)
     for index in range(attempts):
         png = adb.screenshot(serial, emulator)

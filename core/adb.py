@@ -292,7 +292,7 @@ def adb_ready(serial: str, emulator: str | None = None) -> bool:
     emu = normalize_emulator(emulator or emulator_for_serial(serial))
     _ensure_connected(serial, emu)
     rc, out, _ = _run([adb_path_for(emu), "-s", serial, "shell", "getprop",
-                       "sys.boot_completed"])
+                       "sys.boot_completed"], timeout=5)
     return rc == 0 and out.strip() == "1"
 
 
@@ -311,7 +311,7 @@ def current_package(serial: str, emulator: str | None = None) -> str:
         r"ResumedActivity:.*?\s([A-Za-z0-9_.]+)/",
     ]
     for args in commands:
-        rc, out, _ = _run(args, timeout=8)
+        rc, out, _ = _run(args, timeout=3)
         if rc != 0 or not out:
             continue
         for pattern in patterns:
@@ -325,14 +325,20 @@ def screenshot(serial: str, emulator: str | None = None) -> bytes | None:
     emu = normalize_emulator(emulator or emulator_for_serial(serial))
     adb = adb_path_for(emu)
     _ensure_connected(serial, emu)
+    rc, data, _ = _run([adb, "-s", serial, "exec-out", "screencap", "-p"],
+                       timeout=8, binary=True)
+    if rc == 0 and data and data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return data
     dev = "/sdcard/_agt_cap.png"
-    rc, _, _ = _run([adb, "-s", serial, "shell", "screencap", "-p", dev])
+    rc, _, _ = _run([adb, "-s", serial, "shell", "screencap", "-p", dev],
+                    timeout=8)
     if rc != 0:
         return None
-    rc, data, _ = _run([adb, "-s", serial, "exec-out", "cat", dev], binary=True)
+    rc, data, _ = _run([adb, "-s", serial, "exec-out", "cat", dev],
+                       timeout=8, binary=True)
     if rc != 0 or not data:
         return None
-    return data
+    return data if data.startswith(b"\x89PNG\r\n\x1a\n") else None
 
 
 def tap(serial: str, x: int, y: int, emulator: str | None = None) -> bool:

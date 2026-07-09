@@ -488,6 +488,15 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     fast_result = None
     fast_start = time.perf_counter()
     if fast_mode and game.get("control") == "emulator" and not print_only:
+        if job_id:
+            store.update_job(
+                job_id,
+                progress={
+                    "stage": "fast_layer",
+                    "message": "檢查模擬器、遊戲前景與快速規則",
+                },
+                performance=performance,
+            )
         try:
             fast_result = fast_agent.run_fast_rules(
                 game, task=task, job_id=job_id, max_steps=fast_steps)
@@ -562,6 +571,17 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     prompt = build_agent_prompt(
         game, task, fast_context=fast_context, visual_context=visual_context)
     performance["prompt_chars"] = len(prompt)
+    if job_id:
+        store.update_job(
+            job_id,
+            progress={
+                "stage": "codex_handoff",
+                "message": "已完成本地檢查，Codex 判斷中",
+                "fast_handoff_reason": performance.get("fast_handoff_reason", ""),
+                "prompt_chars": performance["prompt_chars"],
+            },
+            performance=performance,
+        )
     if print_only:
         return {"ok": True, "prompt": prompt, "performance": performance}
 
