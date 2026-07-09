@@ -37,6 +37,8 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 from core import store, adb, fast_agent, visual_memory  # noqa: E402
 import ai_runner  # noqa: E402
 
+DEFAULT_SEGMENT_TIMEOUT_SECONDS = 180
+
 
 def _summarize_attempts(attempts: list[dict]) -> list[dict]:
     rows = []
@@ -141,9 +143,9 @@ def _segment_task(overall_task: str, part: str, index: int, total: int,
         if summary.strip())
     if not previous:
         previous = "- 尚無"
-    return f"""這是一個分段任務，請只完成目前這一段，完成後就停止，不要提前執行後面的段落。
+    return f"""這是一個短 checkpoint 分段任務。只完成目前這一段，完成後立刻停止並回報，不要提前執行後面的段落。
 
-整體任務：
+完整任務只供理解流程，不代表現在要全部執行：
 {overall_task}
 
 已完成段落摘要：
@@ -154,8 +156,10 @@ def _segment_task(overall_task: str, part: str, index: int, total: int,
 
 執行要求：
 - 本段開始時先重新截圖確認目前畫面，不要依賴上一段截圖。
-- 只做目前段落需要的低風險操作；遇到登入、付款、轉蛋、PVP 或不確定畫面就停止回報。
-- 本段完成後輸出一段 `CHECKPOINT_SUMMARY:`，簡短說明目前畫面、已完成什麼、下一段可以從哪裡接續。
+- 只做目前段落需要的低風險操作；不要操作下一段。
+- 本段最多做 1 個 UI 轉場；通常 1 到 3 次 tap/swipe 就應該停止。
+- 一旦畫面符合本段目標，立刻輸出 `CHECKPOINT_SUMMARY:` 並結束，不要繼續探索或建立額外規則。
+- 遇到登入、付款、轉蛋、PVP 或不確定畫面就停止回報。
 """
 
 
@@ -312,6 +316,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
               codex_model: str | None = None,
               codex_reasoning_effort: str | None = None,
               segment_mode: bool = True,
+              segment_timeout: int | None = None,
               print_only=False) -> dict:
     total_start = time.perf_counter()
     if agent_id:
@@ -403,7 +408,10 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     use_segments = segment_mode and len(task_parts) >= 2
     performance["mode"] = "segmented" if use_segments else "single"
     performance["segments_total"] = len(task_parts) if use_segments else 1
-    segment_timeout = max(300, int(timeout / max(1, len(task_parts)))) if use_segments else timeout
+    segment_timeout = int(segment_timeout or DEFAULT_SEGMENT_TIMEOUT_SECONDS)
+    segment_timeout = max(60, min(int(timeout), segment_timeout))
+    if not use_segments:
+        segment_timeout = timeout
     performance["segment_timeout_seconds"] = segment_timeout if use_segments else None
     prompt = build_agent_prompt(
         game, task, fast_context=fast_context, visual_context=visual_context)
@@ -570,6 +578,9 @@ def main(argv=None):
                     help="Codex reasoning effort，預設 high")
     ap.add_argument("--no-fast", action="store_true", help="停用 emulator 快速判斷層")
     ap.add_argument("--no-segment", action="store_true", help="停用條列任務自動分段")
+    ap.add_argument("--segment-timeout", type=int,
+                    default=DEFAULT_SEGMENT_TIMEOUT_SECONDS,
+                    help="每個分段最多等待秒數，預設 180")
     ap.add_argument("--fast-steps", type=int, default=8, help="快速規則最多連續執行步數")
     ap.add_argument("--print-prompt", action="store_true", help="只組裝並印出 prompt，不執行")
     args = ap.parse_args(argv)
@@ -591,6 +602,7 @@ def main(argv=None):
                     codex_model=args.model,
                     codex_reasoning_effort=args.reasoning_effort,
                     segment_mode=not args.no_segment,
+                    segment_timeout=args.segment_timeout,
                     print_only=args.print_prompt)
 
     if args.print_prompt and res.get("ok"):
