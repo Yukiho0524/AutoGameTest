@@ -50,13 +50,14 @@ python server.py
 python tools/doctor.py
 ```
 
-然後開 http://127.0.0.1:8777 。四個分頁：
+然後開 http://127.0.0.1:8777 。七個分頁：
 
 - **遊戲庫**：新增/編輯遊戲。填 exe 路徑按「偵測平台」會自動判斷 Steam/Epic/Xbox/PC 並讀出 Steam AppID；模擬器遊戲則選 Android、按「列出已安裝」挑 package。每款遊戲可貼攻略網址送出「學習」任務。
 - **模擬器操控**：即時顯示模擬器畫面，**點畫面就等於送 tap 到模擬器**（透過 ADB，不佔用你的實體滑鼠鍵盤）。可開自動更新。
 - **Agent**：建立綁定某遊戲的代打 agent（預設玩家人格 + 指令），可儲存、重複執行。
-- **任務佇列**：學習與執行 agent 產生的任務清單。
+- **任務佇列**：學習與執行 agent 產生的任務清單。可點單筆查看詳情（payload、結果、stdout/stderr log），並手動清除單筆／已完成／全部。
 - **排程表**：週一到週日、24 小時直條行事曆。把右側 Agent 拖到指定星期與整點，按「儲存排程」後，只要控制台保持執行，未來每週固定時間會自動建立並執行該 Agent 任務。
+- **診斷**：環境自檢，逐項顯示 Python、資料夾寫入、8777 port、LDPlayer/ADB、BlueStacks、Codex CLI、`config/local.json` 狀態，並列出最近的執行 log，方便排查問題。
 - **設定**：調整背景 AI 任務 timeout 等本機設定。
 
 ## 控制模式（兩種）
@@ -81,21 +82,40 @@ A 方案 = emulator 模式，是目前主推架構。已驗證管線見 `data/` 
 ## 目錄結構
 
 ```
-server.py              # 控制台後端（Python 標準庫，零依賴）
+start.bat                # 一般使用者雙擊啟動（先 doctor 檢查再開控制台）
+server.py                # 控制台後端（Python 標準庫，零依賴）
 core/
-  store.py             # games/agents JSON 儲存、skill 檔讀寫、任務佇列
-  platforms.py         # 從 exe 路徑偵測平台 + 讀 Steam AppID
-  launcher.py          # 依平台啟動遊戲（協定 / exe / ADB）
-  adb.py               # 雷電模擬器 ldconsole + adb 封裝（截圖/tap/啟動）
+  store.py               # games/agents JSON 儲存、skill 檔讀寫、任務佇列
+  platforms.py           # 從 exe 路徑偵測平台 + 讀 Steam AppID
+  launcher.py            # 依平台啟動遊戲（協定 / exe / ADB）
+  adb.py                 # 模擬器（LDPlayer / BlueStacks）ldconsole + adb 封裝
+  config.py              # 讀 config/local.json 與環境變數（本機路徑覆寫）
+  fast_agent.py          # 模擬器 agent 的本地快速判斷層（比對安全規則秒處理）
+  visual_memory.py       # 圖片記憶（畫面 signature、狀態、風險標記）
+tools/
+  ai_runner.py           # 呼叫 Codex CLI 執行腳本化提示
+  run_agent.py           # 組自足 prompt → Codex 代打；處理 run_agent job
+  run_learn.py           # 學習：抓資料 → 生成/更新 SKILL.md
+  doctor.py              # 環境自檢（Python/port/模擬器/ADB/Codex/config）
+  fast_rules.py          # 快速規則與截圖 signature 工具
+  visual_memory.py       # 圖片記憶 CLI（add / list / context）
+  start.ps1  ai.ps1      # 啟動 / AI 執行的 PowerShell 包裝
 web/
-  index.html app.js style.css   # 前端
+  index.html app.js style.css   # 前端（7 分頁控制台）
+config/
+  local.json             # 本機路徑設定（git 忽略）；範本見 config.example.json
 data/
-  games.json           # 遊戲與 agent 設定（單一事實來源）
-  jobs/                # 學習/執行任務狀態
-  visual_memory/       # 遊戲測試截圖記憶（畫面狀態、signature、可點區域）
+  games.json             # 遊戲與 agent 設定（單一事實來源）
+  jobs/                  # 學習/執行任務狀態
+  schedules.json         # 週排程
+  fast_rules/<game>.json # 各遊戲的安全快速規則
+  visual_memory/<game>/  # 圖片記憶（memory.json + images/）
+  artifacts/<job>/       # 每次執行的截圖產物
+  logs/                  # 執行 stdout/stderr 與診斷日誌
 .codex/
   skills/<遊戲名>/SKILL.md    # 遊戲知識庫
   agents/<遊戲名>-player.md   # 綁定該遊戲的代打 agent
+AGENTS.md                # Codex 專案指引（處理待辦任務、鐵則、資料流）
 ```
 
 ## AI 認知任務如何執行（learn / run_agent）
