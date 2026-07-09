@@ -12,6 +12,7 @@ let AGENTS = [];
 let SCHEDULES = [];
 let SELECTED_JOB_ID = null;
 let SETTINGS = {};
+let SCRIPTS = [];
 let JOB_STATUS_CACHE = new Map();
 let JOB_NOTIFY_POLL_STARTED = false;
 let JOBS_SEEDED = false;
@@ -29,6 +30,7 @@ $$(".tab").forEach(t => t.onclick = () => {
   if (t.dataset.tab === "control") loadInstances();
   if (t.dataset.tab === "jobs") loadJobs();
   if (t.dataset.tab === "agents") loadAgents();
+  if (t.dataset.tab === "scripts") loadScripts();
   if (t.dataset.tab === "schedule") loadSchedule();
   if (t.dataset.tab === "diagnostics") loadDiagnostics();
   if (t.dataset.tab === "settings") loadSettings();
@@ -390,16 +392,164 @@ async function loadAgents() {
   });
 }
 
+// ---------- scripts ----------
+async function loadScripts() {
+  const r = await api("/api/scripts");
+  SCRIPTS = r.scripts || [];
+  const list = $("#script-list");
+  list.innerHTML = SCRIPTS.length ? "" :
+    '<p class="hint">還沒有腳本。先在「模擬器操控」錄一段操作（錄影中直接點畫面），再從右邊生成。</p>';
+  SCRIPTS.forEach(s => {
+    const div = document.createElement("div");
+    div.className = "card";
+    const genBadge = s.generated_by === "codex"
+      ? '<span class="badge ok">AI 已註解</span>'
+      : '<span class="badge">草稿骨架</span>';
+    div.innerHTML = `
+      <h3>${esc(s.name)}</h3>
+      <div class="meta">
+        ${genBadge}
+        <span class="badge">${s.n_steps} 步</span>
+        <span class="badge">${esc(s.emulator || "")}</span>
+      </div>
+      <p class="hint">${esc(s.description || "")}</p>
+      <div class="meta">來源：${esc(baseName(s.source))} · ${esc(s.created || "")}</div>
+      <div class="row">
+        <button class="small" data-act="run">▶ 執行（無 AI）</button>
+        <button class="small" data-act="view">查看/編輯</button>
+        <button class="small danger" data-act="del">刪除</button>
+      </div>`;
+    div.querySelector('[data-act=run]').onclick = () => runScript(s.id);
+    div.querySelector('[data-act=view]').onclick = () => viewScript(s.id);
+    div.querySelector('[data-act=del]').onclick = () => delScript(s.id);
+    list.appendChild(div);
+  });
+  loadRecordingsForGen();
+}
+
+function baseName(p) {
+  return String(p || "").split(/[\\/]/).pop();
+}
+
+function jobKindLabel(kind) {
+  return {
+    learn: "📖 學習",
+    run_agent: "🕹 執行 Agent",
+    genscript: "🎬 生成腳本（AI）",
+    run_script: "▶ 執行腳本（無 AI）",
+  }[kind] || `🧩 ${kind}`;
+}
+
+async function loadRecordingsForGen() {
+  const { recordings } = await api("/api/recordings");
+  const sel = $("#gen-source");
+  sel.innerHTML = "";
+  const usable = recordings || [];
+  if (!usable.length) {
+    const o = document.createElement("option");
+    o.value = ""; o.textContent = "（找不到錄影，先去「模擬器操控」錄一段）";
+    sel.appendChild(o);
+    return;
+  }
+  usable.forEach(r => {
+    const o = document.createElement("option");
+    o.value = r.path;
+    o.disabled = !r.has_taps;
+    o.textContent = `${r.label} · ${r.mtime_text}` +
+      (r.has_taps ? ` · ${r.n_taps} 次觸控` : " · ✗ 無觸控紀錄");
+    sel.appendChild(o);
+  });
+  const first = usable.find(r => r.has_taps);
+  if (first) sel.value = first.path;
+}
+
+$("#gen-refresh").onclick = loadRecordingsForGen;
+
+$("#genscript-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const source = $("#gen-source").value;
+  if (!source) { $("#gen-status").textContent = "請先選擇一段有觸控紀錄的錄影。"; return; }
+  const job = await api("/api/scripts/generate", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      source,
+      name: f.name.value.trim(),
+      package: f.package.value.trim(),
+    }),
+  });
+  if (job.error) { $("#gen-status").textContent = `無法生成：${job.error}`; return; }
+  $("#gen-status").textContent = job.spawned
+    ? `已建立生成任務 #${job.id}（Codex 註解中）。完成後腳本會出現在左邊清單，進度見任務佇列。`
+    : `任務 #${job.id} 未能自動啟動，請查看任務佇列。`;
+  loadJobs();
+};
+
+async function runScript(id) {
+  const job = await api(`/api/scripts/${id}/run`, { method: "POST" });
+  alert(job.spawned
+    ? `已開始執行腳本（任務 #${job.id}，純 ADB 重放、不用 AI）。\n進度與每步截圖見任務佇列。`
+    : `任務 #${job.id} 未能自動啟動執行器。`);
+}
+
+async function viewScript(id) {
+  const r = await api(`/api/scripts/${id}`);
+  if (!r.script) return;
+  $("#script-viewer").hidden = false;
+  $("#script-viewer").dataset.sid = id;
+  $("#script-viewer-title").textContent = `腳本內容：${r.script.name || id}`;
+  $("#script-yaml").value = r.text || "";
+  $("#script-viewer-status").textContent = "";
+}
+
+$("#script-save").onclick = async () => {
+  const id = $("#script-viewer").dataset.sid;
+  if (!id) return;
+  const r = await api(`/api/scripts/${id}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: $("#script-yaml").value }),
+  });
+  $("#script-viewer-status").textContent = r.ok ? "已儲存。" : `儲存失敗：${r.error}`;
+  if (r.ok) loadScripts();
+};
+$("#script-viewer-close").onclick = () => { $("#script-viewer").hidden = true; };
+
+async function delScript(id) {
+  if (!confirm("刪除這個腳本？（排程中引用它的項目會失效）")) return;
+  await api(`/api/scripts/${id}`, { method: "DELETE" });
+  loadScripts();
+}
+
 // ---------- schedule ----------
 async function loadSchedule() {
   if (!AGENTS.length) {
     const r = await api("/api/agents");
     AGENTS = r.agents;
   }
+  const sr = await api("/api/scripts");
+  SCRIPTS = sr.scripts || [];
   const { schedules } = await api("/api/schedules");
   SCHEDULES = schedules || [];
   renderScheduleAgents();
+  renderScheduleScripts();
   renderScheduleBoard();
+}
+
+function renderScheduleScripts() {
+  const list = $("#schedule-script-list");
+  if (!list) return;
+  list.innerHTML = SCRIPTS.length ? "" : '<p class="hint">目前沒有腳本。</p>';
+  SCRIPTS.forEach(s => {
+    const div = document.createElement("div");
+    div.className = "agent-drag script-drag";
+    div.draggable = true;
+    div.innerHTML = `<strong>🎬 ${esc(s.name)}</strong><span>${s.n_steps} 步 · 無 AI 重放</span>`;
+    div.ondragstart = e => {
+      e.dataTransfer.setData("text/plain", `script:${s.id}`);
+      e.dataTransfer.effectAllowed = "copy";
+    };
+    list.appendChild(div);
+  });
 }
 
 function renderScheduleAgents() {
@@ -445,8 +595,12 @@ function renderScheduleBoard() {
       cell.ondrop = e => {
         e.preventDefault();
         cell.classList.remove("drop");
-        const agentId = e.dataTransfer.getData("text/plain");
-        addSchedule(agentId, day, hour);
+        const payload = e.dataTransfer.getData("text/plain");
+        if (payload.startsWith("script:")) {
+          addScriptSchedule(payload.slice(7), day, hour);
+        } else {
+          addSchedule(payload, day, hour);
+        }
       };
       SCHEDULES
         .filter(s => +s.day === day && +s.hour === hour)
@@ -464,16 +618,41 @@ function scheduleHeaderCell(text) {
 }
 
 function scheduleChip(s) {
-  const agent = AGENTS.find(a => a.id === s.agent_id);
   const chip = document.createElement("div");
-  chip.className = "schedule-chip";
-  chip.innerHTML = `<span>${esc(agent ? agent.name : s.agent_id)}</span><button title="刪除">×</button>`;
+  let label;
+  if (s.script_id) {
+    const sc = SCRIPTS.find(x => x.id === s.script_id);
+    label = `🎬 ${sc ? sc.name : s.script_id}`;
+    chip.className = "schedule-chip script-chip";
+  } else {
+    const agent = AGENTS.find(a => a.id === s.agent_id);
+    label = agent ? agent.name : s.agent_id;
+    chip.className = "schedule-chip";
+  }
+  chip.innerHTML = `<span>${esc(label)}</span><button title="刪除">×</button>`;
   chip.querySelector("button").onclick = () => {
     SCHEDULES = SCHEDULES.filter(x => x.id !== s.id);
     renderScheduleBoard();
     $("#schedule-status").textContent = "排程已移除，記得按儲存排程。";
   };
   return chip;
+}
+
+function addScriptSchedule(scriptId, day, hour) {
+  if (!scriptId) return;
+  const exists = SCHEDULES.some(s =>
+    s.script_id === scriptId && +s.day === day && +s.hour === hour && +(s.minute || 0) === 0);
+  if (exists) return;
+  SCHEDULES.push({
+    id: `script-${scriptId}-${day}-${hour}-${Date.now()}`,
+    script_id: scriptId,
+    day,
+    hour,
+    minute: 0,
+    enabled: true,
+  });
+  renderScheduleBoard();
+  $("#schedule-status").textContent = "腳本排程已加入（到點時純重放、不用 AI），按儲存排程後生效。";
 }
 
 function addSchedule(agentId, day, hour) {
@@ -567,7 +746,7 @@ async function loadJobs() {
     div.className = `card job-card ${j.id === SELECTED_JOB_ID ? "selected" : ""}`;
     div.dataset.jobId = j.id;
     div.innerHTML = `
-      <h3>${j.kind === "learn" ? "📖 學習" : "🕹 執行 Agent"} <span class="badge">${j.status}</span></h3>
+      <h3>${jobKindLabel(j.kind)} <span class="badge">${j.status}</span></h3>
       <div class="meta">#${j.id} · ${esc(j.created)}</div>
       <p class="hint">${esc(JSON.stringify(j.payload))}</p>
       ${j.result ? `<p class="hint">結果：${esc(j.result)}</p>` : ""}

@@ -274,13 +274,23 @@ def get_job(job_id: str) -> dict | None:
         return None
 
 
-def update_job(job_id: str, **fields) -> dict | None:
+def update_job(job_id: str, expected_status: str | None = None,
+               **fields) -> dict | None:
+    """Merge fields into a job file.
+
+    expected_status: when given, the update is applied ONLY if the job's
+    current on-disk status equals it. This closes the cross-process race where
+    a watchdog decides on a stale snapshot (e.g. runner marked done between
+    the watchdog's read and its error write) and would clobber the result.
+    """
     with _lock:
         path = os.path.join(JOBS_DIR, f"{job_id}.json")
         if not os.path.isfile(path):
             return None
         with open(path, "r", encoding="utf-8") as f:
             job = json.load(f)
+        if expected_status is not None and job.get("status") != expected_status:
+            return job   # state moved on; skip the stale update
         job.update(fields)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -380,18 +390,22 @@ def save_schedules(schedules: list[dict]) -> list[dict]:
         if not (0 <= day <= 6 and 0 <= hour <= 23 and 0 <= minute <= 59):
             continue
         agent_id = str(s.get("agent_id", "")).strip()
-        if not agent_id:
-            continue
-        sid = str(s.get("id") or f"{agent_id}-{day}-{hour}-{minute}")
-        clean.append({
+        script_id = str(s.get("script_id", "")).strip()
+        if not agent_id and not script_id:
+            continue   # a schedule targets either an agent or a script
+        target = agent_id or f"script-{script_id}"
+        sid = str(s.get("id") or f"{target}-{day}-{hour}-{minute}")
+        entry = {
             "id": sid,
             "agent_id": agent_id,
+            "script_id": script_id,
             "day": day,
             "hour": hour,
             "minute": minute,
             "enabled": bool(s.get("enabled", True)),
             "last_run_key": str(s.get("last_run_key", "") or ""),
-        })
+        }
+        clean.append(entry)
     with _lock:
         os.makedirs(os.path.dirname(SCHEDULES_FILE), exist_ok=True)
         tmp = SCHEDULES_FILE + ".tmp"

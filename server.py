@@ -22,7 +22,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from core import store, platforms, launcher, adb, config, recorder
+from core import store, platforms, launcher, adb, config, recorder, scripts
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 _CREATE_NO_WINDOW = 0x08000000
@@ -97,6 +97,7 @@ def reconcile_running_jobs() -> None:
             continue
         store.update_job(
             job["id"],
+            expected_status="running",   # skip if the runner finished meanwhile
             status="error",
             result="Runner process exited before writing a result. Check stdout/stderr logs, then re-run the Agent.",
             run_reason="runner process disappeared",
@@ -172,6 +173,30 @@ def enqueue_agent_run(agent: dict, source: str = "manual",
     return job
 
 
+def enqueue_script_run(script_meta: dict, source: str = "manual",
+                       schedule: dict | None = None) -> dict:
+    """Queue + spawn a script replay. No AI involved — pure ADB playback."""
+    payload = {
+        "script_id": script_meta["id"],
+        "script_name": script_meta.get("name", ""),
+        "source": source,
+    }
+    if schedule:
+        payload["schedule_id"] = schedule.get("id")
+        payload["scheduled_day"] = schedule.get("day")
+        payload["scheduled_hour"] = schedule.get("hour")
+        payload["scheduled_minute"] = schedule.get("minute", 0)
+    job = store.enqueue_job("run_script", payload)
+    spawned = spawn_runner("run_script.py", job["id"])
+    job["spawned"] = spawned
+    if not spawned:
+        store.update_job(
+            job["id"],
+            status="error",
+            result="無法啟動 tools/run_script.py 背景執行器")
+    return job
+
+
 def _scheduler_loop() -> None:
     while True:
         now = datetime.now()
@@ -186,6 +211,15 @@ def _scheduler_loop() -> None:
             if int(schedule.get("hour", -1)) != now.hour:
                 continue
             if int(schedule.get("minute", 0)) != now.minute:
+                continue
+            script_id = schedule.get("script_id", "")
+            if script_id:
+                meta = scripts.get_script(script_id)
+                if meta:
+                    enqueue_script_run(
+                        {"id": script_id, "name": meta.get("name", "")},
+                        source="schedule", schedule=schedule)
+                store.mark_schedule_run(schedule.get("id", ""), run_key)
                 continue
             agent = store.get_agent(schedule.get("agent_id", ""))
             if not agent:
@@ -637,6 +671,18 @@ class Handler(BaseHTTPRequestHandler):
             emulator = q.get("emulator", [None])[0]
             serial = q.get("serial", [adb.serial_for(0, emulator)])[0]
             return self._json({"packages": adb.list_packages(serial, emulator=emulator)})
+        if p == "/api/scripts":
+            return self._json({"scripts": scripts.list_scripts(),
+                               "yaml_available": scripts.yaml_available()})
+        m = re.match(r"^/api/scripts/([^/]+)$", p)
+        if m:
+            data = scripts.get_script(m.group(1))
+            if not data:
+                return self.send_error(404)
+            return self._json({"script": data,
+                               "text": scripts.get_script_text(m.group(1))})
+        if p == "/api/recordings":
+            return self._json({"recordings": scripts.list_recordings()})
         if p == "/api/emulator/record/status":
             serial = q.get("serial", [None])[0]
             st = recorder.status(serial)
@@ -687,12 +733,53 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/emulator/tap":
             adb.reload_config_paths()
             serial = b.get("serial", adb.serial_for(0, b.get("emulator")))
-            ok = adb.tap(serial, int(b["x"]), int(b["y"]), b.get("emulator"))
-            return self._json({"ok": ok})
+            x, y = int(b["x"]), int(b["y"])
+            # while recording, tap through the kernel layer so it lands in
+            # taps.json (input tap bypasses evdev and would be lost)
+            recorded = recorder.recording_tap(serial, x, y)
+            ok = recorded or adb.tap(serial, x, y, b.get("emulator"))
+            return self._json({"ok": ok, "recorded": recorded})
         if p == "/api/emulator/launch-instance":
             adb.reload_config_paths()
             adb.launch_instance(int(b.get("index", 0)), b.get("emulator"))
             return self._json({"ok": True})
+        if p == "/api/scripts/generate":
+            source = str(b.get("source", "")).strip()
+            if not source or not os.path.exists(source):
+                return self._json({"ok": False, "error": f"找不到錄影：{source}"})
+            if not scripts.taps_json_for(source):
+                return self._json({"ok": False,
+                                   "error": "此錄影沒有 taps.json，無法生成"
+                                            "（請用新版錄影功能重錄，錄影中在模擬"
+                                            "器視窗或操控分頁點擊）"})
+            job = store.enqueue_job("genscript", {
+                "source": source,
+                "name": str(b.get("name", "")).strip(),
+                "package": str(b.get("package", "")).strip(),
+                "serial": str(b.get("serial", "")).strip(),
+                "emulator": str(b.get("emulator", "")).strip(),
+            })
+            job["spawned"] = spawn_runner("run_genscript.py", job["id"])
+            if not job["spawned"]:
+                store.update_job(job["id"], status="error",
+                                 result="無法啟動 tools/run_genscript.py")
+            return self._json(job)
+        m = re.match(r"^/api/scripts/([^/]+)/run$", p)
+        if m:
+            meta = scripts.get_script(m.group(1))
+            if not meta:
+                return self.send_error(404)
+            return self._json(enqueue_script_run(
+                {"id": m.group(1), "name": meta.get("name", "")}))
+        m = re.match(r"^/api/scripts/([^/]+)$", p)
+        if m:
+            # save edited YAML text back
+            try:
+                saved = scripts.save_script_text(
+                    str(b.get("text", "")), script_id=m.group(1))
+                return self._json({"ok": True, "script": saved})
+            except (ValueError, RuntimeError) as e:
+                return self._json({"ok": False, "error": str(e)})
         if p == "/api/emulator/record/start":
             adb.reload_config_paths()
             emulator = b.get("emulator")
@@ -752,6 +839,9 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/games/([^/]+)$", p)
         if m:
             return self._json({"ok": store.delete_game(m.group(1))})
+        m = re.match(r"^/api/scripts/([^/]+)$", p)
+        if m:
+            return self._json({"ok": scripts.delete_script(m.group(1))})
         m = re.match(r"^/api/agents/([^/]+)$", p)
         if m:
             return self._json({"ok": store.delete_agent(m.group(1))})

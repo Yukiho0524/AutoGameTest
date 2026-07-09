@@ -278,3 +278,13 @@ button.small { padding: 4px 10px; font-size: 12px; }
   0%, 100% { opacity: 1; }
   50% { opacity: 0.65; }
 }
+
+/* ---- scripts tab & schedule script palette ---- */
+.palette-sep { margin-top: 18px; }
+.script-drag { border-left: 3px solid var(--accent2); }
+.schedule-chip.script-chip { background: rgba(47, 214, 168, 0.18); border-color: var(--accent2); }
+#script-yaml {
+  width: 100%; font-family: Consolas, monospace; font-size: 12px;
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+}

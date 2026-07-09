@@ -17,6 +17,7 @@
     <button class="tab" data-tab="control">模擬器操控</button>
     <button class="tab" data-tab="agents">Agent</button>
     <button class="tab" data-tab="jobs">任務佇列</button>
+    <button class="tab" data-tab="scripts">腳本</button>
     <button class="tab" data-tab="schedule">排程表</button>
     <button class="tab" data-tab="diagnostics">診斷</button>
     <button class="tab" data-tab="settings">設定</button>
@@ -222,6 +223,47 @@
     </div>
   </section>
 
+  <!-- ===== 腳本 ===== -->
+  <section id="scripts" class="panel">
+    <div class="row-split">
+      <div class="col">
+        <h2>已生成的腳本</h2>
+        <p class="hint">腳本 = 從錄影生成的確定性重放流程。<b>執行不需要 AI</b>（純 ADB 座標重放）；生成需要 AI（Codex 看畫面註解步驟）。執行狀態顯示在任務佇列。</p>
+        <div id="script-list" class="cards"></div>
+      </div>
+      <div class="col">
+        <h2>從錄影生成腳本（AI）</h2>
+        <form id="genscript-form">
+          <label>選擇錄影
+            <select id="gen-source" required></select>
+          </label>
+          <p class="hint" id="gen-source-hint">只有帶觸控紀錄（taps.json）的錄影能生成。錄影時請直接在模擬器視窗操作，或用「模擬器操控」分頁點畫面。</p>
+          <label>腳本名稱（選填）
+            <input name="name" placeholder="留空由 AI 命名">
+          </label>
+          <label>執行前啟動的 App package（選填）
+            <input name="package" placeholder="com.example.game，留空不啟動">
+          </label>
+          <div class="actions">
+            <button type="submit" class="primary">🎬 生成腳本</button>
+            <button type="button" id="gen-refresh">重新整理錄影清單</button>
+          </div>
+          <p class="hint" id="gen-status"></p>
+        </form>
+
+        <div id="script-viewer" class="learn" hidden>
+          <h3 id="script-viewer-title">腳本內容</h3>
+          <textarea id="script-yaml" rows="16" spellcheck="false"></textarea>
+          <div class="actions">
+            <button id="script-save" class="primary">儲存修改</button>
+            <button id="script-viewer-close">關閉</button>
+          </div>
+          <p class="hint" id="script-viewer-status"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ===== 排程表 ===== -->
   <section id="schedule" class="panel">
     <div class="schedule-head">
@@ -236,8 +278,10 @@
         <div id="schedule-board" class="schedule-board"></div>
       </div>
       <aside class="agent-palette">
-        <h3>Agent</h3>
+        <h3>Agent（AI 代打）</h3>
         <div id="schedule-agent-list" class="agent-drag-list"></div>
+        <h3 class="palette-sep">腳本（無 AI 重放）</h3>
+        <div id="schedule-script-list" class="agent-drag-list"></div>
       </aside>
     </div>
     <p class="hint" id="schedule-status"></p>

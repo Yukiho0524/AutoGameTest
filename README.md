@@ -52,13 +52,14 @@ python server.py
 python tools/doctor.py
 ```
 
-然後開 http://127.0.0.1:8777 。七個分頁：
+然後開 http://127.0.0.1:8777 。八個分頁：
 
 - **遊戲庫**：新增/編輯遊戲。填 exe 路徑按「偵測平台」會自動判斷 Steam/Epic/Xbox/PC 並讀出 Steam AppID；模擬器遊戲則選 Android、按「列出已安裝」挑 package。每款遊戲可貼攻略網址送出「學習」任務。
-- **模擬器操控**：即時顯示模擬器畫面，**點畫面就等於送 tap 到模擬器**（透過 ADB，不佔用你的實體滑鼠鍵盤）。可開自動更新。下方有**錄影列**：按「⏺ 開始錄影」把模擬器畫面錄成 mp4（`adb screenrecord`，單段上限 180 秒、超過自動無縫接段），存檔位置可自訂並會記住（留空 = `data\recordings`），可勾選是否錄下觸控點，「開啟資料夾」直接跳到存檔位置。單段輸出 `rec_<時間>.mp4`；超過 180 秒輸出 `rec_<時間>/part01.mp4...` + `session.json`（與 GameTestAi 抽幀工具相容的格式）。
+- **模擬器操控**：即時顯示模擬器畫面，**點畫面就等於送 tap 到模擬器**（透過 ADB，不佔用你的實體滑鼠鍵盤）。可開自動更新。下方有**錄影列**：按「⏺ 開始錄影」把模擬器畫面錄成 mp4（`adb screenrecord`，單段上限 180 秒、超過自動無縫接段），存檔位置可自訂並會記住（留空 = `data\recordings`），可勾選是否錄下觸控點，「開啟資料夾」直接跳到存檔位置。單段輸出 `rec_<時間>.mp4`；超過 180 秒輸出 `rec_<時間>/part01.mp4...` + `session.json`（與 GameTestAi 抽幀工具相容的格式）。錄影同時會用 `getevent` 擷取**實際觸控座標**存成 `taps.json`（腳本生成的資料來源）；錄影中從操控分頁點畫面會自動改走核心輸入層（sendevent），點擊照樣生效且會被記錄。
 - **Agent**：建立綁定某遊戲的代打 agent（預設玩家人格 + 指令），可儲存、重複執行。
-- **任務佇列**：學習與執行 agent 產生的任務清單。可點單筆查看詳情（payload、結果、stdout/stderr log），並手動清除單筆／已完成／全部。
-- **排程表**：週一到週日、24 小時直條行事曆。把右側 Agent 拖到指定星期與整點，按「儲存排程」後，只要控制台保持執行，未來每週固定時間會自動建立並執行該 Agent 任務。
+- **任務佇列**：學習、執行 agent、生成/執行腳本產生的任務清單。可點單筆查看詳情（payload、結果、stdout/stderr log），並手動清除單筆／已完成／全部。
+- **腳本**：把錄影轉成可重放的確定性腳本。左側列出已生成腳本（可執行/查看編輯/刪除）；右側選一段**帶觸控紀錄**的錄影按「生成」——生成需要 AI（Codex 看關鍵幀為每步命名、補等待、標記風險步驟），**執行不需要 AI**（純 ADB 座標重放，每步截圖存 artifacts）。執行狀態同樣顯示在任務佇列。
+- **排程表**：週一到週日、24 小時直條行事曆。右側有兩個來源：**Agent（AI 代打）**與**腳本（無 AI 重放）**，都可拖到指定星期與整點；按「儲存排程」後，只要控制台保持執行，未來每週固定時間會自動建立並執行對應任務。
 - **診斷**：環境自檢，逐項顯示 Python、資料夾寫入、8777 port、LDPlayer/ADB、BlueStacks、Codex CLI、`config/local.json` 狀態，並列出最近的執行 log，方便排查問題。
 - **設定**：調整背景 AI 任務 timeout、Codex model 與推理強度等本機設定。
 
@@ -99,6 +100,8 @@ tools/
   ai_runner.py           # 呼叫 Codex CLI 執行腳本化提示
   run_agent.py           # 組自足 prompt → Codex 代打；處理 run_agent job
   run_learn.py           # 學習：抓資料 → 生成/更新 SKILL.md
+  run_genscript.py       # 腳本生成（AI）：taps.json 骨架 + Codex 看幀註解
+  run_script.py          # 腳本執行（無 AI）：純 ADB 座標重放
   doctor.py              # 環境自檢（Python/port/模擬器/ADB/Codex/config）
   fast_rules.py          # 快速規則與截圖 signature 工具
   visual_memory.py       # 圖片記憶 CLI（add / list / context）
@@ -115,6 +118,7 @@ data/
   visual_memory/<game>/  # 圖片記憶（memory.json + images/）
   artifacts/<job>/       # 每次執行的截圖產物
   recordings/            # 模擬器錄影輸出（預設位置，可在錄影列自訂）
+  scripts/<id>.yaml      # 從錄影生成的重放腳本
   logs/                  # 執行 stdout/stderr 與診斷日誌
 .codex/
   skills/<遊戲名>/SKILL.md    # 遊戲知識庫
@@ -153,9 +157,21 @@ python tools/visual_memory.py context gget
 
 登入、付款、轉蛋、PVP 畫面可以記成高風險狀態，但不要記成可自動執行的安全動作。
 
+## 腳本（錄影 → 生成 → 無 AI 重放）
+
+「腳本」把一段你親手示範的操作變成可重複執行的流程，**生成用 AI、執行不用**：
+
+1. **錄影**：在「模擬器操控」按 ⏺ 錄影，期間直接操作遊戲（在模擬器視窗用滑鼠、或在操控分頁點畫面都可以）。停止後除了 mp4，還會存下 `taps.json`——`getevent` 實測的每一次觸控（座標/時長/滑動），這是腳本正確性的來源。
+2. **生成（AI，job kind `genscript`）**：`tools/run_genscript.py` 用 cv2 從影片抽出每步觸控前的關鍵幀，把 **taps.json 原始資料 + 關鍵幀 + 腳本規格全部交給 Codex 完整計算**：步驟取捨（過場誤點轉成 wait）、等待秒數、具體命名、風險標記（登入/付費/轉蛋/PVP 加 ⚠）都由 Codex 決定。Python 只做**安全驗證**：座標必須出自 taps.json 實測值（AI 發明座標會被整份拒絕）、動作限白名單、等待上限。Codex 失敗或輸出未過驗證時，退回確定性骨架草稿儲存，錄影不會白費。
+3. **執行（無 AI，job kind `run_script`）**：`tools/run_script.py` 純 ADB 重放——正規化座標換算當前解析度後 tap/swipe/long_press，每步截圖存 `data/artifacts/<job>/`，狀態回寫任務佇列。也可 CLI 直接跑：`python tools/run_script.py --script <id>`。
+
+適合固定不變的例行流程（每日簽到、領獎、掃蕩）；畫面會變動、需要判斷的任務仍交給 Agent（AI 代打）。腳本 YAML 可在腳本分頁直接查看/編輯（會做格式驗證）。
+
+注意：腳本生成需要 `opencv-python`（抽關鍵幀）與 `PyYAML`；缺 cv2 時仍可生成（AI 只依時間座標註解，品質較低），缺 PyYAML 則腳本功能停用。執行器只用標準庫。
+
 ## 週排程
 
-排程儲存在 `data/schedules.json`。控制台啟動時會開一個背景排程器，每 20 秒檢查一次目前星期與時間；若命中排程，會強制建立一筆 `run_agent` job 並背景執行。為避免同一分鐘重複執行，排程項目會記錄 `last_run_key`。
+排程儲存在 `data/schedules.json`。控制台啟動時會開一個背景排程器，每 20 秒檢查一次目前星期與時間；若命中排程，依項目類型建立 `run_agent`（AI 代打）或 `run_script`（無 AI 重放）job 並背景執行。為避免同一分鐘重複執行，排程項目會記錄 `last_run_key`。
 
 注意：目前排程依賴 `server.py` 正在執行；若電腦關機或控制台未開，該時段不會補跑。
 

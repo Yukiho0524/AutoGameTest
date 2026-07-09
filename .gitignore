@@ -5,6 +5,7 @@ data/logs/
 data/artifacts/
 data/recordings/
 data/settings.json
+data/schedules.json
 config/local.json
 *.tmp
 shot_test.png
