@@ -177,7 +177,7 @@ python tools/ai_runner.py "你的提示"
 
 `tools/run_agent.py` 會把「角色 persona + 遊戲 skill 知識 + 操作指令表 + 任務」組成一份自足 prompt，交給 Codex 執行。
 背景 AI 任務預設 timeout 為 3600 秒（60 分鐘），可在控制台「設定」分頁調整，也可用 `--timeout` 覆寫；手動執行也可用 `--model gpt-5.5 --reasoning-effort high` 明確指定。
-runner 預設用單輪 Codex 執行，避免條列任務被拆成多段後多次啟動高推理模型而拖慢操作。若需要排查長任務或刻意 checkpoint，可加 `--segment` 啟用條列分段；每段預設最多等待 180 秒，也可用 `--segment-timeout` 調整。
+runner 預設用單輪 Codex 執行，避免條列任務被拆成多段後多次啟動高推理模型而拖慢操作。若需要排查長任務或刻意 checkpoint，可加 `--segment` 啟用條列分段；每段預設最多等待 600 秒，也可用 `--segment-timeout` 調整。
 任務詳情會顯示 `performance`，包含 prompt 大小、fast layer 秒數、Codex 秒數、分段耗時與完成段落數，方便定位慢在哪一段。
 
 ```bash

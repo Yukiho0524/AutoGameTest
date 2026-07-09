@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 from core import store, adb, fast_agent, visual_memory  # noqa: E402
 import ai_runner  # noqa: E402
 
-DEFAULT_SEGMENT_TIMEOUT_SECONDS = 180
+DEFAULT_SEGMENT_TIMEOUT_SECONDS = 600
 
 
 def _summarize_attempts(attempts: list[dict]) -> list[dict]:
@@ -298,6 +298,7 @@ computer-use 應用名稱「{cu}」。
 
 # 速度策略
 - 優先用目前畫面、Skill、圖片記憶與 fast layer 交接資訊判斷下一步，不要為同一畫面反覆長篇分析。
+- 若任務是條列步驟，而且目前畫面已經在第 2 步或更後面的狀態，將前面已達成的步驟視為完成，直接接續下一個未完成步驟，不要退回重做。
 - 若已能確認任務完成，立即停止並回報，不要繼續探索或多做不必要操作。
 - 每輪最多做 1 到 3 個低風險操作；每個操作後截圖驗證，畫面不符預期就停下重判。
 - 載入中或轉場中可短暫等待後重截圖；不要因一次暫時性截圖/載入失敗就展開大範圍探索。
@@ -592,7 +593,7 @@ def main(argv=None):
                     help="相容舊參數：維持停用分段")
     ap.add_argument("--segment-timeout", type=int,
                     default=DEFAULT_SEGMENT_TIMEOUT_SECONDS,
-                    help="每個分段最多等待秒數，預設 180")
+                    help="每個分段最多等待秒數，預設 600")
     ap.add_argument("--fast-steps", type=int, default=8, help="快速規則最多連續執行步數")
     ap.add_argument("--print-prompt", action="store_true", help="只組裝並印出 prompt，不執行")
     args = ap.parse_args(argv)
