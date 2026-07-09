@@ -229,6 +229,7 @@ Android 模擬器 agent 會額外載入 `.codex/skills/mobile-game-controls/SKIL
 背景 AI 任務預設 timeout 為 3600 秒（60 分鐘），可在控制台「設定」分頁調整，也可用 `--timeout` 覆寫；手動執行也可用 `--model gpt-5.5 --reasoning-effort high` 明確指定。
 控制台背景執行會對 5 步以上的條列任務啟用自動 checkpoint，每 2 個編號步驟跑一段 Codex，降低單一長任務後段上下文越積越慢的情況。手動 CLI 可用 `--auto-segment` 開啟相同行為，或用 `--no-segment` 明確停用；每段預設最多等待 600 秒，也可用 `--segment-timeout` 調整。
 任務詳情會顯示「效能診斷」與 `performance`，包含 prompt 大小、fast layer 秒數、啟動模擬器/遊戲/首張截圖階段耗時、Codex 秒數、分段耗時與完成段落數，方便定位慢在哪一段。runner 會自動產生瓶頸觀察與優化建議；若遊戲已在前景，會跳過重新 launch app。ADB 截圖優先走 `exec-out screencap -p`，失敗才 fallback 到 `/sdcard` 檔案截圖，並會在 job progress 顯示 fast layer / Codex handoff 階段。
+Agent job 完成後，若設定頁的「Agent 完成後自動把效能建議交給 Codex 調整」開啟，系統會自動建立 `autotune_agent` job。這個 job 會把該次 `performance_analysis`、原任務結果、Skill/Agent 摘要交給 Codex，讓 Codex 做保守的知識調整（例如補充完成判定、整理重複教訓、提示下次輸出 fast rules / visual memory）。它不會操作遊戲、不會登入/付費/抽卡，也不會自動 git commit / push。
 Agent prompt 會自動注入「完成判定與收尾」規則：任務最後一句若是「結束任務」「完成後通知我」等語意，達成後應直接回報 done，不再停在完成畫面等待額外指令。使用者仍可在 prompt 末尾寫明完成條件，會讓判斷更穩，但不是必填。
 Agent 可在設定中開啟「任務完成時網頁彈窗通知」。控制台網頁會每 10 秒輪詢任務狀態；有開啟通知的任務從 pending/running 變成 done/error 時，瀏覽器會跳 alert。此通知依賴控制台頁面開著，不是 Windows 系統通知。
 

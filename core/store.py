@@ -20,6 +20,7 @@ DEFAULT_SETTINGS = {
     "ai_timeout_seconds": 3600,
     "codex_model": "gpt-5.5",
     "codex_reasoning_effort": "high",
+    "auto_tune_after_agent": True,
     "recording_dir": "",
 }
 CODEX_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
@@ -48,6 +49,18 @@ def _save(data: dict) -> None:
 def _slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     return slug or "game"
+
+
+def _clean_bool(value, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "yes", "y", "on"):
+            return True
+        if text in ("0", "false", "no", "n", "off"):
+            return False
+    return default
 
 
 # ---------------- games ----------------
@@ -339,6 +352,8 @@ def _clean_settings(settings: dict | None) -> dict:
         else DEFAULT_SETTINGS["codex_reasoning_effort"]
     )
     clean["recording_dir"] = str(clean.get("recording_dir", "") or "").strip()
+    clean["auto_tune_after_agent"] = _clean_bool(
+        clean.get("auto_tune_after_agent", True), True)
     return clean
 
 

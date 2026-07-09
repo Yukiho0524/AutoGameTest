@@ -443,6 +443,7 @@ function jobKindLabel(kind) {
   return {
     learn: "📖 學習",
     run_agent: "🕹 執行 Agent",
+    autotune_agent: "🛠 效能調整",
     genscript: "🎬 生成腳本（AI）",
     run_script: "▶ 執行腳本（ADB）",
   }[kind] || `🧩 ${kind}`;
@@ -1057,6 +1058,8 @@ async function loadSettings() {
   $("#settings-codex-model").value = SETTINGS.codex_model || DEFAULT_CODEX_MODEL;
   $("#settings-codex-reasoning-effort").value =
     SETTINGS.codex_reasoning_effort || DEFAULT_CODEX_REASONING_EFFORT;
+  $("#settings-auto-tune-after-agent").checked =
+    SETTINGS.auto_tune_after_agent !== false;
   renderSettings();
 }
 
@@ -1070,7 +1073,9 @@ function renderSettings() {
     <p class="hint">${seconds} 秒</p>
     <p><strong>Codex</strong></p>
     <p>${esc(model)} + ${esc(reasoning)}</p>
-    <p class="hint">背景學習與 Agent 執行都會套用</p>`;
+    <p><strong>Agent 效能調整</strong></p>
+    <p>${SETTINGS.auto_tune_after_agent !== false ? "自動啟用" : "停用"}</p>
+    <p class="hint">Agent 完成後會建立效能調整任務</p>`;
 }
 
 $("#settings-form").onsubmit = async (e) => {
@@ -1079,12 +1084,14 @@ $("#settings-form").onsubmit = async (e) => {
   const seconds = Math.max(60, Math.min(86400, Math.round(minutes * 60)));
   const model = ($("#settings-codex-model").value || DEFAULT_CODEX_MODEL).trim();
   const reasoning = $("#settings-codex-reasoning-effort").value || DEFAULT_CODEX_REASONING_EFFORT;
+  const autoTune = $("#settings-auto-tune-after-agent").checked;
   const r = await api("/api/settings", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ai_timeout_seconds: seconds,
       codex_model: model,
       codex_reasoning_effort: reasoning,
+      auto_tune_after_agent: autoTune,
     }),
   });
   SETTINGS = r.settings || {};

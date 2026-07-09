@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import traceback
@@ -41,6 +42,8 @@ DEFAULT_SEGMENT_TIMEOUT_SECONDS = 600
 AUTO_SEGMENT_MIN_STEPS = 5
 DEFAULT_SEGMENT_BATCH_SIZE = 2
 COMMON_MOBILE_CONTROLS_SKILL = ".codex/skills/mobile-game-controls/SKILL.md"
+_CREATE_NO_WINDOW = 0x08000000
+LOG_DIR = os.path.join(ROOT, "data", "logs")
 
 
 def _summarize_attempts(attempts: list[dict]) -> list[dict]:
@@ -74,6 +77,96 @@ def _resolve_codex_settings(model: str | None = None,
     if reasoning_effort not in ai_runner.CODEX_REASONING_EFFORTS:
         reasoning_effort = "high"
     return model, reasoning_effort
+
+
+def _spawn_autotune_runner(job_id: str, timeout: int,
+                           model: str, reasoning_effort: str) -> bool:
+    runner = os.path.join(ROOT, "tools", "run_autotune.py")
+    if not os.path.isfile(runner):
+        return False
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        out_path = os.path.join(LOG_DIR, f"{job_id}.out.log")
+        err_path = os.path.join(LOG_DIR, f"{job_id}.err.log")
+        out = open(out_path, "w", encoding="utf-8")
+        err = open(err_path, "w", encoding="utf-8")
+        try:
+            proc = subprocess.Popen(
+                [
+                    sys.executable, runner,
+                    "--job", job_id,
+                    "--engine", "codex",
+                    "--timeout", str(timeout),
+                    "--model", model,
+                    "--reasoning-effort", reasoning_effort,
+                ],
+                cwd=ROOT,
+                creationflags=_CREATE_NO_WINDOW,
+                stdout=out,
+                stderr=err,
+                stdin=subprocess.DEVNULL,
+            )
+        finally:
+            out.close()
+            err.close()
+        store.update_job(
+            job_id,
+            log_stdout=out_path,
+            log_stderr=err_path,
+            runner_pid=proc.pid,
+            runner_started_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+            codex_model=model,
+            codex_reasoning_effort=reasoning_effort,
+            ai_timeout_seconds=timeout,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _enqueue_autotune_job(source_job_id: str | None, game: dict,
+                          agent_id: str | None,
+                          performance_analysis: dict | None,
+                          result: dict | None,
+                          model: str,
+                          reasoning_effort: str) -> dict | None:
+    if not source_job_id or not performance_analysis:
+        return None
+    settings = store.get_settings()
+    if settings.get("auto_tune_after_agent") is False:
+        return None
+    recommendations = performance_analysis.get("recommendations") or []
+    observations = performance_analysis.get("observations") or []
+    if not recommendations and not observations:
+        return None
+    timeout = min(1800, int(settings.get("ai_timeout_seconds", 3600) or 3600))
+    timeout = max(300, timeout)
+    payload = {
+        "source_job_id": source_job_id,
+        "game_id": game.get("id", ""),
+        "agent_id": agent_id or "",
+        "performance_status": performance_analysis.get("status", ""),
+        "recommendations": recommendations[:8],
+        "observations": observations[:8],
+        "source_engine": (result or {}).get("engine_used", ""),
+        "source_ok": bool((result or {}).get("ok")),
+    }
+    job = store.enqueue_job("autotune_agent", payload)
+    spawned = _spawn_autotune_runner(
+        job["id"], timeout=timeout, model=model, reasoning_effort=reasoning_effort)
+    job["spawned"] = spawned
+    store.update_job(
+        source_job_id,
+        autotune_job_id=job["id"],
+        autotune_status="running" if spawned else "error",
+    )
+    if not spawned:
+        store.update_job(
+            job["id"],
+            status="error",
+            result="無法啟動 tools/run_autotune.py 背景執行器",
+        )
+    return job
 
 
 def split_numbered_task(task: str) -> list[str]:
@@ -626,6 +719,20 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
                     performance=performance,
                     performance_analysis=performance_analysis,
                     result=_format_job_result(result))
+                autotune_job = _enqueue_autotune_job(
+                    job_id,
+                    game,
+                    agent_id,
+                    performance_analysis,
+                    result,
+                    codex_model,
+                    codex_reasoning_effort,
+                )
+                if autotune_job:
+                    result["autotune"] = {
+                        "job_id": autotune_job["id"],
+                        "spawned": autotune_job.get("spawned", False),
+                    }
             return result
 
     fast_context = fast_agent.format_fast_context(game.get("id", ""), fast_result)
@@ -823,6 +930,20 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             progress=None,
             result=_format_job_result(result),
             error_trace=(result.get("traceback") or "")[:4000] or None)
+        autotune_job = _enqueue_autotune_job(
+            job_id,
+            game,
+            agent_id,
+            performance_analysis,
+            result,
+            codex_model,
+            codex_reasoning_effort,
+        )
+        if autotune_job:
+            result["autotune"] = {
+                "job_id": autotune_job["id"],
+                "spawned": autotune_job.get("spawned", False),
+            }
     if fast_rules_merge:
         result["fast_rules"] = fast_rules_merge
     if fast_result:
