@@ -56,6 +56,54 @@ def ai_codex_settings() -> dict:
     }
 
 
+def _pid_exists(pid: int | str | None) -> bool:
+    try:
+        pid = int(pid or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            proc = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=3,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return True
+        return str(pid) in (proc.stdout or "")
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def reconcile_running_jobs() -> None:
+    for job in store.list_jobs():
+        if job.get("status") != "running":
+            continue
+        pid = job.get("runner_pid")
+        if not pid or _pid_exists(pid):
+            continue
+        store.update_job(
+            job["id"],
+            status="error",
+            result="Runner process exited before writing a result. Check stdout/stderr logs, then re-run the Agent.",
+            run_reason="runner process disappeared",
+            error_trace=f"Recorded runner_pid={pid} is no longer running.",
+        )
+
+
 def spawn_runner(script_name: str, job_id: str, engine: str = "codex",
                  timeout: int | None = None) -> bool:
     runner = os.path.join(ROOT, "tools", script_name)
@@ -70,7 +118,7 @@ def spawn_runner(script_name: str, job_id: str, engine: str = "codex",
         out = open(out_path, "w", encoding="utf-8")
         err = open(err_path, "w", encoding="utf-8")
         try:
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 [sys.executable, runner, "--job", job_id, "--engine", engine,
                  "--timeout", str(timeout),
                  "--model", codex_settings["model"],
@@ -84,6 +132,8 @@ def spawn_runner(script_name: str, job_id: str, engine: str = "codex",
             err.close()
         store.update_job(job_id, log_stdout=out_path, log_stderr=err_path,
                          ai_timeout_seconds=timeout,
+                         runner_pid=proc.pid,
+                         runner_started_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                          codex_model=codex_settings["model"],
                          codex_reasoning_effort=codex_settings["reasoning_effort"])
         return True
@@ -285,6 +335,7 @@ def _codex_check() -> dict:
 
 
 def _job_status_check() -> dict:
+    reconcile_running_jobs()
     counts: dict[str, int] = {}
     for job in store.list_jobs():
         status = str(job.get("status", "unknown"))
@@ -479,6 +530,7 @@ def build_diagnostics_failure(exc: BaseException) -> dict:
 
 
 def job_detail(job_id: str) -> dict | None:
+    reconcile_running_jobs()
     job = store.get_job(job_id)
     if not job:
         return None
@@ -552,6 +604,7 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/agents":
             return self._json({"agents": store.list_agents(q.get("game_id", [None])[0])})
         if p == "/api/jobs":
+            reconcile_running_jobs()
             return self._json({"jobs": store.list_jobs()})
         if p == "/api/schedules":
             return self._json({"schedules": store.list_schedules()})
