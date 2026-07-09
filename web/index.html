@@ -165,9 +165,10 @@
             <input name="name" required placeholder="例：每日簽到領獎">
           </label>
           <label>指令（Prompt）
-            <textarea name="prompt" rows="5" required
-              placeholder="你是一位遊戲玩家，請去遊戲中幫我達成…"></textarea>
+            <textarea name="prompt" rows="7" required
+              placeholder="1. 進入指定遊戲後，前往目標功能或關卡&#10;2. 在目標畫面依序執行要做的操作&#10;3. 遇到確認或結果畫面時，截圖確認再繼續&#10;4. 完成所有目標後，回報完成並結束任務"></textarea>
           </label>
+          <p class="hint">AI 會以遊戲玩家身分進入綁定遊戲，並依照 1、2、3、4... 的步驟順序執行；建議最後一行寫清楚完成條件。</p>
           <label class="checkline">
             <input type="checkbox" name="notify_on_done" checked>
             任務完成時網頁彈窗通知
