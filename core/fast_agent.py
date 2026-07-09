@@ -369,6 +369,18 @@ def _execute_action(action: dict, serial: str, emulator: str, package: str) -> t
     return False, f"unsupported action: {kind}"
 
 
+def _screenshot_with_retry(serial: str, emulator: str,
+                           attempts: int = 3, wait: float = 0.8) -> bytes | None:
+    attempts = max(1, attempts)
+    for index in range(attempts):
+        png = adb.screenshot(serial, emulator)
+        if png:
+            return png
+        if index + 1 < attempts and wait > 0:
+            time.sleep(wait)
+    return None
+
+
 def run_fast_rules(game: dict, task: str = "", job_id: str | None = None,
                    max_steps: int = 8) -> dict:
     result = {
@@ -418,9 +430,9 @@ def run_fast_rules(game: dict, task: str = "", job_id: str | None = None,
     last_signature = None
     repeat_counts: dict[str, int] = {}
     for step_index in range(max(0, max_steps)):
-        png = adb.screenshot(serial, emulator)
+        png = _screenshot_with_retry(serial, emulator)
         if not png:
-            result["handoff_reason"] = "screenshot failed"
+            result["handoff_reason"] = "screenshot failed after retry"
             break
         screenshot_path = os.path.join(artifact_dir, f"fast_{step_index + 1:03d}.png")
         with open(screenshot_path, "wb") as f:
@@ -476,7 +488,7 @@ def run_fast_rules(game: dict, task: str = "", job_id: str | None = None,
                 wait = 0.7
             if wait > 0:
                 time.sleep(wait)
-        after_png = adb.screenshot(serial, emulator)
+        after_png = _screenshot_with_retry(serial, emulator, attempts=2, wait=0.5)
         if after_png:
             after_path = os.path.join(artifact_dir, f"fast_{step_index + 1:03d}_after.png")
             with open(after_path, "wb") as f:
@@ -488,7 +500,7 @@ def run_fast_rules(game: dict, task: str = "", job_id: str | None = None,
             result["last_signature"] = after_signature
         else:
             step["after_screenshot"] = ""
-            result["handoff_reason"] = "post-action screenshot failed"
+            result["handoff_reason"] = "post-action screenshot failed after retry"
             result["steps"].append(step)
             return result
         result["steps"].append(step)

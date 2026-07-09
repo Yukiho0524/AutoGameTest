@@ -296,6 +296,13 @@ computer-use 應用名稱「{cu}」。
 # 本次任務
 {task}
 
+# 速度策略
+- 優先用目前畫面、Skill、圖片記憶與 fast layer 交接資訊判斷下一步，不要為同一畫面反覆長篇分析。
+- 若已能確認任務完成，立即停止並回報，不要繼續探索或多做不必要操作。
+- 每輪最多做 1 到 3 個低風險操作；每個操作後截圖驗證，畫面不符預期就停下重判。
+- 載入中或轉場中可短暫等待後重截圖；不要因一次暫時性截圖/載入失敗就展開大範圍探索。
+- 遇到未知高風險、登入、付費、轉蛋、PVP 或排位畫面，停止並回報。
+
 # 鐵則
 - 每一步操作後截圖驗證畫面，不符預期就停下重判，不要盲目連點。
 - 登入/帳密/付費畫面一律停止並回報，絕不代為輸入或消費。
@@ -315,7 +322,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
               fast_mode=True, fast_steps=8,
               codex_model: str | None = None,
               codex_reasoning_effort: str | None = None,
-              segment_mode: bool = True,
+              segment_mode: bool = False,
               segment_timeout: int | None = None,
               print_only=False) -> dict:
     total_start = time.perf_counter()
@@ -405,6 +412,8 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     performance["fast_context_chars"] = len(fast_context)
     performance["visual_context_chars"] = len(visual_context)
     task_parts = split_numbered_task(task)
+    performance["segments_detected"] = len(task_parts)
+    performance["segmentation_requested"] = bool(segment_mode)
     use_segments = segment_mode and len(task_parts) >= 2
     performance["mode"] = "segmented" if use_segments else "single"
     performance["segments_total"] = len(task_parts) if use_segments else 1
@@ -577,7 +586,10 @@ def main(argv=None):
                     choices=sorted(ai_runner.CODEX_REASONING_EFFORTS),
                     help="Codex reasoning effort，預設 high")
     ap.add_argument("--no-fast", action="store_true", help="停用 emulator 快速判斷層")
-    ap.add_argument("--no-segment", action="store_true", help="停用條列任務自動分段")
+    ap.add_argument("--segment", action="store_true",
+                    help="啟用條列任務分段；預設停用以避免多次 Codex 啟動拖慢操作")
+    ap.add_argument("--no-segment", action="store_true",
+                    help="相容舊參數：維持停用分段")
     ap.add_argument("--segment-timeout", type=int,
                     default=DEFAULT_SEGMENT_TIMEOUT_SECONDS,
                     help="每個分段最多等待秒數，預設 180")
@@ -601,7 +613,7 @@ def main(argv=None):
                     fast_steps=args.fast_steps,
                     codex_model=args.model,
                     codex_reasoning_effort=args.reasoning_effort,
-                    segment_mode=not args.no_segment,
+                    segment_mode=args.segment and not args.no_segment,
                     segment_timeout=args.segment_timeout,
                     print_only=args.print_prompt)
 
