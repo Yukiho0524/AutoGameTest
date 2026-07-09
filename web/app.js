@@ -12,6 +12,10 @@ let AGENTS = [];
 let SCHEDULES = [];
 let SELECTED_JOB_ID = null;
 let SETTINGS = {};
+let JOB_STATUS_CACHE = new Map();
+let JOB_NOTIFY_POLL_STARTED = false;
+let JOBS_SEEDED = false;
+let JOBS_LOADING = false;
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const DEFAULT_CODEX_REASONING_EFFORT = "high";
 const DAYS = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"];
@@ -369,7 +373,10 @@ async function loadAgents() {
     div.className = "card";
     div.innerHTML = `
       <h3>${esc(a.name)}</h3>
-      <div class="meta"><span class="badge">${esc(g ? g.name : a.game_id)}</span></div>
+      <div class="meta">
+        <span class="badge">${esc(g ? g.name : a.game_id)}</span>
+        ${a.notify_on_done !== false ? '<span class="badge ok">完成通知</span>' : '<span class="badge">不通知</span>'}
+      </div>
       <p class="hint">${esc(a.prompt)}</p>
       <div class="row">
         <button class="small" data-act="run">▶ 執行</button>
@@ -500,6 +507,7 @@ function editAgent(a) {
   const f = $("#agent-form");
   f.id.value = a.id; f.game_id.value = a.game_id;
   f.name.value = a.name; f.prompt.value = a.prompt;
+  f.notify_on_done.checked = a.notify_on_done !== false;
   window.scrollTo(0, 0);
 }
 async function runAgent(id) {
@@ -524,16 +532,30 @@ $("#agent-form").onsubmit = async (e) => {
   await api("/api/agents", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id: f.id.value || undefined, game_id: f.game_id.value,
-                           name: f.name.value.trim(), prompt: f.prompt.value.trim() }),
+                           name: f.name.value.trim(), prompt: f.prompt.value.trim(),
+                           notify_on_done: f.notify_on_done.checked }),
   });
-  f.reset(); f.id.value = "";
+  f.reset(); f.id.value = ""; f.notify_on_done.checked = true;
   loadAgents();
 };
-$("#agent-reset").onclick = () => { $("#agent-form").reset(); $("#agent-form").id.value = ""; };
+$("#agent-reset").onclick = () => {
+  $("#agent-form").reset();
+  $("#agent-form").id.value = "";
+  $("#agent-form").notify_on_done.checked = true;
+};
 
 // ---------- jobs ----------
 async function loadJobs() {
-  const { jobs } = await api("/api/jobs");
+  if (JOBS_LOADING) return;
+  JOBS_LOADING = true;
+  let jobs = [];
+  try {
+    const r = await api("/api/jobs");
+    jobs = r.jobs || [];
+  } finally {
+    JOBS_LOADING = false;
+  }
+  handleJobNotifications(jobs);
   const list = $("#job-list");
   list.innerHTML = jobs.length ? "" : '<p class="hint">目前沒有任務。</p>';
   if (SELECTED_JOB_ID && !jobs.some(j => j.id === SELECTED_JOB_ID)) {
@@ -566,6 +588,39 @@ async function loadJobs() {
   } else if (SELECTED_JOB_ID) {
     loadJobDetail(SELECTED_JOB_ID);
   }
+}
+
+function handleJobNotifications(jobs) {
+  const finished = new Set(["done", "error"]);
+  const next = new Map();
+  jobs.forEach(j => {
+    const prev = JOB_STATUS_CACHE.get(j.id);
+    const status = j.status || "";
+    const shouldNotify = j.kind === "run_agent" && j.payload?.notify_on_done !== false;
+    if (JOBS_SEEDED && shouldNotify && finished.has(status) &&
+        (prev === undefined || !finished.has(prev))) {
+      showJobCompletionAlert(j);
+    }
+    next.set(j.id, status);
+  });
+  JOB_STATUS_CACHE = next;
+  JOBS_SEEDED = true;
+}
+
+function showJobCompletionAlert(job) {
+  const ok = job.status === "done";
+  const agent = AGENTS.find(a => a.id === job.payload?.agent_id);
+  const title = ok ? "任務完成" : "任務異常";
+  const name = agent?.name || job.payload?.agent_id || job.id;
+  const result = job.result ? `\n\n${String(job.result).slice(0, 600)}` : "";
+  alert(`${title} #${job.id}\n${name}${result}`);
+}
+
+function startJobNotificationPolling() {
+  if (JOB_NOTIFY_POLL_STARTED) return;
+  JOB_NOTIFY_POLL_STARTED = true;
+  loadJobs();
+  setInterval(loadJobs, 10000);
 }
 
 async function delJob(id) {
@@ -863,3 +918,4 @@ function esc(s) {
 // init
 applyPlatformFields();
 loadGames();
+startJobNotificationPolling();

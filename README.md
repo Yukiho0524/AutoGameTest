@@ -180,6 +180,7 @@ python tools/ai_runner.py "你的提示"
 runner 預設用單輪 Codex 執行，避免條列任務被拆成多段後多次啟動高推理模型而拖慢操作。若需要排查長任務或刻意 checkpoint，可加 `--segment` 啟用條列分段；每段預設最多等待 600 秒，也可用 `--segment-timeout` 調整。
 任務詳情會顯示「效能診斷」與 `performance`，包含 prompt 大小、fast layer 秒數、啟動模擬器/遊戲/首張截圖階段耗時、Codex 秒數、分段耗時與完成段落數，方便定位慢在哪一段。runner 會自動產生瓶頸觀察與優化建議；若遊戲已在前景，會跳過重新 launch app。ADB 截圖優先走 `exec-out screencap -p`，失敗才 fallback 到 `/sdcard` 檔案截圖，並會在 job progress 顯示 fast layer / Codex handoff 階段。
 Agent prompt 會自動注入「完成判定與收尾」規則：任務最後一句若是「結束任務」「完成後通知我」等語意，達成後應直接回報 done，不再停在完成畫面等待額外指令。使用者仍可在 prompt 末尾寫明完成條件，會讓判斷更穩，但不是必填。
+Agent 可在設定中開啟「任務完成時網頁彈窗通知」。控制台網頁會每 10 秒輪詢任務狀態；有開啟通知的任務從 pending/running 變成 done/error 時，瀏覽器會跳 alert。此通知依賴控制台頁面開著，不是 Windows 系統通知。
 
 ```bash
 python tools/run_agent.py --agent masterduel-daily

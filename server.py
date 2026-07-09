@@ -150,6 +150,7 @@ def enqueue_agent_run(agent: dict, source: str = "manual",
         "game_id": agent.get("game_id"),
         "prompt": agent.get("prompt", ""),
         "source": source,
+        "notify_on_done": bool(agent.get("notify_on_done", True)),
     }
     if schedule:
         payload["schedule_id"] = schedule.get("id")
