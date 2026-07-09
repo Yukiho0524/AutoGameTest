@@ -18,6 +18,7 @@ Script schema:
       until_timeout: 120       # until / wait_scene 最多等待秒數
       stable_timeout: 45       # 有 wait_after 的操作後，最多等待畫面穩定秒數
       match_interval: 1.0      # 圖片比對輪詢間隔
+      match_threshold: 0.72    # 圖片比對門檻，執行時限制在 0.6~0.8
     created: 2026-07-09 14:00:00
     steps:
       - action: tap | tap_image | tap_scene | long_press | swipe | wait | wait_scene | launch_app
@@ -25,7 +26,7 @@ Script schema:
         x: 0.5004        # tap/long_press：正規化座標 (0~1)
         y: 0.5007
         image: assets/foo/button.png  # tap_image/tap_scene/wait_scene：按鈕或畫面模板
-        threshold: 0.88  # 圖片比對門檻
+        threshold: 0.72  # 圖片比對門檻（建議 0.6~0.8）
         anchor: assets/foo/main.png   # 操作前需先看到的畫面/錨點
         scene: assets/foo/main.png    # 同 anchor，偏語意名稱
         until: assets/foo/done.png    # 操作後需等到的畫面/錨點
@@ -391,6 +392,7 @@ def build_skeleton(source_path: str, name: str = "",
             "until_timeout": 120,
             "stable_timeout": 45,
             "match_interval": 1.0,
+            "match_threshold": 0.72,
         },
         "steps": steps,
     }

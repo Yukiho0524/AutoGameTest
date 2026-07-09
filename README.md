@@ -174,7 +174,7 @@ steps:
   - action: tap_image
     name: 點擊 進入遊戲
     image: data/scripts/assets/rec_xxx/templates/tap00_template.png
-    threshold: 0.88
+    threshold: 0.72
     timeout: 12
     until: data/scripts/assets/rec_xxx/templates/tap01_template.png
     wait_after: 2.0
@@ -188,6 +188,7 @@ defaults:
   until_timeout: 120     # until / wait_scene 最多等待
   stable_timeout: 45     # 有 wait_after 的操作後，最多等待畫面穩定
   match_interval: 1.0
+  match_threshold: 0.72  # 圖片比對門檻，執行時限制在 0.6~0.8
 ```
 
 適合固定不變的例行流程（每日簽到、領獎、掃蕩）；畫面會變動、需要判斷的任務仍交給 Agent（AI 代打）。腳本 YAML 可在腳本分頁直接查看/編輯（會做格式驗證）。

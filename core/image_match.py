@@ -14,7 +14,7 @@ from typing import Any
 from . import fast_agent
 
 
-DEFAULT_THRESHOLD = 0.88
+DEFAULT_THRESHOLD = 0.72
 
 
 def normalize_region(region: Any, width: int, height: int) -> tuple[int, int, int, int]:

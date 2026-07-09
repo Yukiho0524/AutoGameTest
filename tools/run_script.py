@@ -36,6 +36,9 @@ DEFAULT_VISUAL_TIMEOUT = 60.0
 DEFAULT_UNTIL_TIMEOUT = 120.0
 DEFAULT_MATCH_INTERVAL = 1.0
 DEFAULT_STABLE_TIMEOUT = 45.0
+DEFAULT_MATCH_THRESHOLD = 0.72
+MIN_MATCH_THRESHOLD = 0.60
+MAX_MATCH_THRESHOLD = 0.80
 
 
 def _png_size(data: bytes) -> tuple[int, int]:
@@ -65,6 +68,10 @@ def _safe_int(value, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
 
 
 class ScriptRunner:
@@ -155,6 +162,12 @@ class ScriptRunner:
         seconds = _safe_float(value, fallback)
         return max(0.0, seconds)
 
+    def _match_threshold(self, spec: dict) -> float:
+        default = _safe_float(
+            self.defaults.get("match_threshold"), DEFAULT_MATCH_THRESHOLD)
+        threshold = _safe_float(spec.get("threshold"), default)
+        return _clamp(threshold, MIN_MATCH_THRESHOLD, MAX_MATCH_THRESHOLD)
+
     def _script_dir(self) -> str:
         script_id = str(self.script.get("id") or "").strip()
         if script_id:
@@ -209,8 +222,7 @@ class ScriptRunner:
             default_timeout = self._default_seconds(
                 "visual_timeout", DEFAULT_VISUAL_TIMEOUT)
         timeout = _safe_float(spec.get("timeout"), default_timeout)
-        threshold = _safe_float(
-            spec.get("threshold"), image_match.DEFAULT_THRESHOLD)
+        threshold = self._match_threshold(spec)
         interval = max(0.2, _safe_float(
             spec.get("interval"),
             self._default_seconds("match_interval", DEFAULT_MATCH_INTERVAL)))
@@ -259,8 +271,7 @@ class ScriptRunner:
         timeout = _safe_float(
             step.get("timeout"),
             self._default_seconds("visual_timeout", DEFAULT_VISUAL_TIMEOUT))
-        threshold = _safe_float(
-            step.get("threshold"), image_match.DEFAULT_THRESHOLD)
+        threshold = self._match_threshold(step)
         interval = max(0.2, _safe_float(
             step.get("interval"),
             self._default_seconds("match_interval", DEFAULT_MATCH_INTERVAL)))
@@ -418,7 +429,7 @@ class ScriptRunner:
             if not match.get("found"):
                 self._progress(
                     f"tap_image 找不到模板：score={match.get('score', 0.0)}/"
-                    f"{match.get('threshold', s.get('threshold', image_match.DEFAULT_THRESHOLD))}"
+                    f"{match.get('threshold', self._match_threshold(s))}"
                     f"{' ' + match.get('error', '') if match.get('error') else ''}")
                 return False
             ok = self._tap_from_match(match, s)
@@ -428,7 +439,7 @@ class ScriptRunner:
                 if not match.get("found"):
                     self._progress(
                         f"tap_scene 找不到模板：score={match.get('score', 0.0)}/"
-                        f"{match.get('threshold', s.get('threshold', image_match.DEFAULT_THRESHOLD))}"
+                        f"{match.get('threshold', self._match_threshold(s))}"
                         f"{' ' + match.get('error', '') if match.get('error') else ''}")
                     return False
                 ok = self._tap_from_match(match, s)

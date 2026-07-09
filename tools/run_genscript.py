@@ -45,7 +45,10 @@ DEFAULT_SCRIPT_DEFAULTS = {
     "until_timeout": 120,
     "stable_timeout": 45,
     "match_interval": 1.0,
+    "match_threshold": 0.72,
 }
+MIN_MATCH_THRESHOLD = 0.60
+MAX_MATCH_THRESHOLD = 0.80
 
 # how far before the recorded tap time to grab the frame (screenrecord lag)
 FRAME_LAG = 0.45
@@ -202,6 +205,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
   - `until_timeout: 120`（until / wait_scene 最多等待秒數）
   - `stable_timeout: 45`（有 wait_after 的操作後，最多等待載入/轉場穩定秒數）
   - `match_interval: 1.0`（圖片比對輪詢間隔）
+  - `match_threshold: 0.72`（圖片比對門檻，執行器會限制在 0.6~0.8）
 - steps 支援的 action：
   - `tap`：欄位 x, y（**必須直接取自對應 tap 的 nx/ny，不得自行估計**）
   - `tap_image`：欄位 image/template（使用上方模板路徑做圖片比對，找到後點擊模板中心），可加 threshold/timeout/region
@@ -212,7 +216,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
   - `wait_scene`：等待 image/template 或 scene/anchor 出現
 - 每步可帶：`name`（具體中文名稱，例「點擊 出擊按鈕」）、`wait_after`（該步後等待秒數）
 - 每步可帶畫面驗證：`anchor` / `scene`（操作前必須出現的模板）、`until`（操作後必須等到的模板）
-- 圖片比對欄位可用：`image` 或 `template`、`threshold`（建議 0.86~0.92）、`timeout`、`region: [x1, y1, x2, y2]`
+- 圖片比對欄位可用：`image` 或 `template`、`threshold`（建議 0.6~0.8，預設 0.72）、`timeout`、`region: [x1, y1, x2, y2]`
 
 # 生成規則（比照 GameTestAi 的精神）
 1. 依 taps 時間順序轉成 steps；kind 對應 action（tap/long_press/swipe）。
@@ -235,11 +239,12 @@ defaults:
   until_timeout: 120
   stable_timeout: 45
   match_interval: 1.0
+  match_threshold: 0.72
 steps:
   - action: tap_image
     name: ...
     image: data/scripts/assets/.../templates/tap00_template.png
-    threshold: 0.88
+    threshold: 0.72
     timeout: 60
     until: data/scripts/assets/.../templates/tap01_template.png
     until_timeout: 120
@@ -274,6 +279,14 @@ def _has_image_spec(data: dict) -> bool:
                for k in ("image", "template"))
 
 
+def _clamp_float(value, low: float, high: float, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(low, min(high, number))
+
+
 def _clean_visual_value(value):
     if value in (None, "", []):
         return None
@@ -287,7 +300,11 @@ def _clean_visual_value(value):
         for key in ("image", "template"):
             if isinstance(value.get(key), str) and value.get(key).strip():
                 out[key] = value[key].strip()[:500]
-        for key in ("threshold", "timeout", "interval", "scan_step", "max_points"):
+        if value.get("threshold") is not None:
+            out["threshold"] = _clamp_float(
+                value.get("threshold"), MIN_MATCH_THRESHOLD,
+                MAX_MATCH_THRESHOLD, DEFAULT_SCRIPT_DEFAULTS["match_threshold"])
+        for key in ("timeout", "interval", "scan_step", "max_points"):
             if isinstance(value.get(key), (int, float)):
                 out[key] = value[key]
         if isinstance(value.get("region"), (list, tuple)) and len(value["region"]) == 4:
@@ -309,7 +326,11 @@ def _copy_visual_fields(src: dict, dst: dict) -> None:
     for key in ("image", "template"):
         if isinstance(src.get(key), str) and src.get(key).strip():
             dst[key] = src[key].strip()[:500]
-    for key in ("threshold", "timeout", "interval", "scan_step",
+    if src.get("threshold") is not None:
+        dst["threshold"] = _clamp_float(
+            src.get("threshold"), MIN_MATCH_THRESHOLD,
+            MAX_MATCH_THRESHOLD, DEFAULT_SCRIPT_DEFAULTS["match_threshold"])
+    for key in ("timeout", "interval", "scan_step",
                 "max_points", "anchor_timeout", "until_timeout"):
         if isinstance(src.get(key), (int, float)):
             dst[key] = src[key]
@@ -343,7 +364,10 @@ def _clean_defaults(value) -> dict:
         return defaults
     for key, fallback in DEFAULT_SCRIPT_DEFAULTS.items():
         raw = value.get(key)
-        if isinstance(raw, (int, float)):
+        if key == "match_threshold":
+            defaults[key] = _clamp_float(
+                raw, MIN_MATCH_THRESHOLD, MAX_MATCH_THRESHOLD, fallback)
+        elif isinstance(raw, (int, float)):
             defaults[key] = max(0, raw)
         else:
             try:
