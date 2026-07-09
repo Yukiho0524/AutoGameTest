@@ -68,6 +68,9 @@ def list_scripts() -> list[dict]:
         if not data:
             continue
         steps = data.get("steps") or []
+        risk_count = sum(
+            1 for step in steps
+            if isinstance(step, dict) and step.get("risk"))
         rows.append({
             "id": data.get("id", fn.rsplit(".", 1)[0]),
             "name": data.get("name", fn),
@@ -79,6 +82,7 @@ def list_scripts() -> list[dict]:
             "generated_by": data.get("generated_by", ""),
             "created": data.get("created", ""),
             "n_steps": len(steps),
+            "risk_count": risk_count,
         })
     return sorted(rows, key=lambda r: r.get("created", ""), reverse=True)
 
@@ -265,7 +269,7 @@ def build_skeleton(source_path: str, name: str = "",
     """Build a runnable draft script straight from taps.json (no AI).
 
     Timing: each step waits the real gap observed between recorded touches
-    (capped) so the replay follows the demonstrated rhythm.
+    (with a small buffer for loading) so replay follows the demonstrated rhythm.
     """
     taps = load_taps(source_path)
     if not taps:
@@ -279,7 +283,8 @@ def build_skeleton(source_path: str, name: str = "",
         gap = 0.0 if prev_t is None else max(0.0, float(tp["t"]) - prev_t)
         prev_t = float(tp["t"])
         if gap > 1.2 and steps:
-            steps[-1]["wait_after"] = round(min(gap, 30.0), 1)
+            buffer = 2.0 if gap >= 8.0 else 0.0
+            steps[-1]["wait_after"] = round(min(gap + buffer, 90.0), 1)
         kind = tp.get("kind", "tap")
         if kind == "swipe":
             steps.append({

@@ -47,6 +47,7 @@ header .sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
   font-size: 11px; background: var(--panel2); color: var(--muted); margin-right: 6px;
 }
 .card .badge.ok { color: var(--accent2); }
+.card .badge.warn { color: #f0b84f; }
 .card .row { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
 
 form label { display: block; margin-bottom: 12px; font-size: 13px; color: var(--muted); }

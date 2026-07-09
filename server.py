@@ -174,12 +174,14 @@ def enqueue_agent_run(agent: dict, source: str = "manual",
 
 
 def enqueue_script_run(script_meta: dict, source: str = "manual",
-                       schedule: dict | None = None) -> dict:
+                       schedule: dict | None = None,
+                       allow_risk: bool = False) -> dict:
     """Queue + spawn a script replay. No AI involved — pure ADB playback."""
     payload = {
         "script_id": script_meta["id"],
         "script_name": script_meta.get("name", ""),
         "source": source,
+        "allow_risk": bool(allow_risk),
     }
     if schedule:
         payload["schedule_id"] = schedule.get("id")
@@ -770,7 +772,8 @@ class Handler(BaseHTTPRequestHandler):
             if not meta:
                 return self.send_error(404)
             return self._json(enqueue_script_run(
-                {"id": m.group(1), "name": meta.get("name", "")}))
+                {"id": m.group(1), "name": meta.get("name", "")},
+                allow_risk=bool(b.get("allow_risk"))))
         m = re.match(r"^/api/scripts/([^/]+)$", p)
         if m:
             # save edited YAML text back

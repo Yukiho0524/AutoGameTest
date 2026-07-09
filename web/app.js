@@ -405,10 +405,14 @@ async function loadScripts() {
     const genBadge = s.generated_by === "codex"
       ? '<span class="badge ok">AI 已註解</span>'
       : '<span class="badge">草稿骨架</span>';
+    const riskBadge = Number(s.risk_count || 0) > 0
+      ? `<span class="badge warn">高風險 ${Number(s.risk_count || 0)}</span>`
+      : "";
     div.innerHTML = `
       <h3>${esc(s.name)}</h3>
       <div class="meta">
         ${genBadge}
+        ${riskBadge}
         <span class="badge">${s.n_steps} 步</span>
         <span class="badge">${esc(s.emulator || "")}</span>
       </div>
@@ -486,7 +490,16 @@ $("#genscript-form").onsubmit = async (e) => {
 };
 
 async function runScript(id) {
-  const job = await api(`/api/scripts/${id}/run`, { method: "POST" });
+  const script = SCRIPTS.find(s => s.id === id);
+  const riskCount = Number(script?.risk_count || 0);
+  if (riskCount > 0) {
+    const ok = confirm(`這個腳本包含 ${riskCount} 個高風險步驟，可能會抽卡、消耗資源或進入購買流程。\n\n確認仍要執行？`);
+    if (!ok) return;
+  }
+  const job = await api(`/api/scripts/${id}/run`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ allow_risk: riskCount > 0 }),
+  });
   alert(job.spawned
     ? `已開始執行腳本（任務 #${job.id}，純 ADB 重放、不用 AI）。\n進度與每步截圖見任務佇列。`
     : `任務 #${job.id} 未能自動啟動執行器。`);

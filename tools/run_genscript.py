@@ -129,7 +129,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 
 # 生成規則（比照 GameTestAi 的精神）
 1. 依 taps 時間順序轉成 steps；kind 對應 action（tap/long_press/swipe）。
-2. 兩次觸控的實際間隔反映成前一步的 `wait_after`（間隔近取 1~2 秒；有載入/轉場依畫面判斷加長，上限 30）。
+2. 兩次觸控的實際間隔反映成前一步的 `wait_after`（間隔近取 1~2 秒；有載入/轉場依畫面判斷加長，上限 90；不要把實測 30 秒以上的載入硬砍成 30）。
 3. 看截圖判斷：若某次觸控落在過場/載入畫面（畫面模糊、無穩定按鈕），該點很可能是使用者在等待時的無意義點擊——改成 `wait` 步驟並在 name 註明，不要保留成 tap。
 4. 每步命名要具體（看圖說出點的是什麼按鈕/區域），不要只寫「點擊」。
 5. 若某步畫面涉及 登入/帳密/付費/購買/轉蛋/PVP 排位：保留該步但加 `risk: true` 與 `risk_reason`，name 前加「⚠ 」。
@@ -200,7 +200,7 @@ def sanitize_generated(data: dict, taps: list[dict], meta: dict) -> tuple[dict, 
         out = {"action": action,
                "name": str(s.get("name", "") or f"step {i+1}")[:120]}
         wa = s.get("wait_after")
-        if isinstance(wa, (int, float)) and 0 <= float(wa) <= 30:
+        if isinstance(wa, (int, float)) and 0 <= float(wa) <= 90:
             out["wait_after"] = round(float(wa), 1)
         if s.get("risk"):
             out["risk"] = True
