@@ -26,6 +26,11 @@ Script schema:
         x: 0.5004        # tap/long_press：正規化座標 (0~1)
         y: 0.5007
         image: assets/foo/button.png  # tap_image/tap_scene/wait_scene：按鈕或畫面模板
+        templates:                  # 可放多個候選模板，任一命中即可
+          - image: assets/foo/button-a.png
+            record_pos: [0.1, 0.2]  # Airtest-like：相對畫面中心的位置
+            resolution: [1280, 720]
+            target_pos: 5           # 九宮格點擊位置，5=中心
         threshold: 0.72  # 圖片比對門檻（建議 0.6~0.8）
         anchor: assets/foo/main.png   # 操作前需先看到的畫面/錨點
         scene: assets/foo/main.png    # 同 anchor，偏語意名稱
@@ -186,8 +191,14 @@ def validate_script(data: dict) -> str:
 
 
 def _has_image_spec(value: dict) -> bool:
-    return any(isinstance(value.get(k), str) and value.get(k).strip()
-               for k in IMAGE_FIELDS)
+    if any(isinstance(value.get(k), str) and value.get(k).strip()
+           for k in IMAGE_FIELDS):
+        return True
+    templates = value.get("templates")
+    return isinstance(templates, list) and any(
+        isinstance(item, str) and item.strip()
+        or isinstance(item, dict) and _has_image_spec(item)
+        for item in templates)
 
 
 def _validate_visual_spec(value, step_no: int, field: str) -> str:
@@ -205,6 +216,8 @@ def _validate_visual_spec(value, step_no: int, field: str) -> str:
         return f"step {step_no} {field} 必須是字串、物件或列表"
     if _has_image_spec(value):
         return ""
+    if isinstance(value.get("templates"), list):
+        return _validate_visual_spec(value["templates"], step_no, field)
     nested = value.get("all") or value.get("any")
     if isinstance(nested, list):
         return _validate_visual_spec(nested, step_no, field)

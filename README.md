@@ -174,8 +174,12 @@ steps:
   - action: tap_image
     name: 點擊 進入遊戲
     image: data/scripts/assets/rec_xxx/templates/tap00_template.png
+    record_pos: [0.0, 0.31]   # Airtest-like：相對畫面中心的位置
+    resolution: [1280, 720]   # 錄製時解析度，用於推測搜尋區域
+    target_pos: 5             # 1~9 九宮格點擊位置，5=中心
+    rgb: false                # 預設灰階比對，較不怕亮度/顏色小變化
     threshold: 0.72
-    timeout: 12
+    timeout: 60
     until: data/scripts/assets/rec_xxx/templates/tap01_template.png
     wait_after: 2.0
 ```
@@ -190,6 +194,8 @@ defaults:
   match_interval: 1.0
   match_threshold: 0.72  # 圖片比對門檻，執行時限制在 0.6~0.8
 ```
+
+執行器參考 Airtest 的 `Template` 思路：模板可帶 `record_pos` / `resolution`，會先在錄製時點擊位置附近搜尋，找不到才退回全圖；`target_pos` 用來指定點模板九宮格中的哪個位置；`templates` 可放多張候選圖，任一命中即可。
 
 適合固定不變的例行流程（每日簽到、領獎、掃蕩）；畫面會變動、需要判斷的任務仍交給 Agent（AI 代打）。腳本 YAML 可在腳本分頁直接查看/編輯（會做格式驗證）。
 

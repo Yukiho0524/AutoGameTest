@@ -85,7 +85,7 @@ def extract_keyframes(source: str, taps: list[dict], out_dir: str) -> list[str]:
 
 
 def extract_touch_templates(frames: list[str], taps: list[dict],
-                            out_dir: str) -> list[str]:
+                            out_dir: str) -> list[dict]:
     """Crop a small visual target around each recorded tap for tap_image."""
     try:
         import cv2  # noqa: PLC0415
@@ -94,7 +94,7 @@ def extract_touch_templates(frames: list[str], taps: list[dict],
     if not frames:
         return []
     os.makedirs(out_dir, exist_ok=True)
-    saved: list[str] = []
+    saved: list[dict] = []
     for frame_path in frames:
         idx = _tap_index_from_frame(frame_path)
         if idx < 0 or idx >= len(taps):
@@ -119,7 +119,18 @@ def extract_touch_templates(frames: list[str], taps: list[dict],
             continue
         path = os.path.join(out_dir, f"tap{idx:02d}_template.png")
         if cv2.imwrite(path, frame[y1:y2, x1:x2]):
-            saved.append(path)
+            saved.append({
+                "tap_index": idx,
+                "image": _relative_path(path),
+                "record_pos": [
+                    round(float(tap.get("nx", 0.5)) - 0.5, 4),
+                    round(float(tap.get("ny", 0.5)) - 0.5, 4),
+                ],
+                "resolution": [int(w), int(h)],
+                "target_pos": 5,
+                "threshold": DEFAULT_SCRIPT_DEFAULTS["match_threshold"],
+                "rgb": False,
+            })
     return saved
 
 
@@ -177,14 +188,17 @@ def _frame_at(cv2, metas, t: float):
 
 
 def build_generation_prompt(taps: list[dict], frames: list[str],
-                            templates: list[str],
+                            templates: list[dict],
                             meta: dict) -> str:
     frame_lines = "\n".join(
         f"- taps[{_tap_index_from_frame(p)}] 觸控前畫面：{p}"
         for p in frames) or "（無關鍵幀可用，請依 taps 的時間與座標推理）"
     template_lines = "\n".join(
-        f"- taps[{_tap_index_from_frame(p)}] 可點擊模板：{_relative_path(p)}"
-        for p in templates) or "（無模板圖可用，才使用座標重放）"
+        f"- taps[{t.get('tap_index')}] Airtest-like Template："
+        f"image={t.get('image')} record_pos={t.get('record_pos')} "
+        f"resolution={t.get('resolution')} target_pos={t.get('target_pos')} "
+        f"threshold={t.get('threshold')} rgb={t.get('rgb')}"
+        for t in templates) or "（無模板圖可用，才使用座標重放）"
     return f"""你是遊戲自動化腳本產生器。使用者錄了一段親手示範的遊戲操作，以下是錄影期間 getevent 實測到的**每一次觸控原始資料**（taps.json）與每次觸控前的畫面截圖。請你**完整計算並產出可重放的腳本 YAML**。
 
 # 觸控原始資料（taps.json，時間單位秒，nx/ny 為 0~1 正規化座標）
@@ -208,8 +222,8 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
   - `match_threshold: 0.72`（圖片比對門檻，執行器會限制在 0.6~0.8）
 - steps 支援的 action：
   - `tap`：欄位 x, y（**必須直接取自對應 tap 的 nx/ny，不得自行估計**）
-  - `tap_image`：欄位 image/template（使用上方模板路徑做圖片比對，找到後點擊模板中心），可加 threshold/timeout/region
-  - `tap_scene`：先用 anchor/scene 驗證目前畫面，再用 image/template 點擊；沒有 image 時才退回 x/y
+  - `tap_image`：欄位 image/template 或 templates（使用上方模板路徑做圖片比對，找到後點擊模板 target_pos），可加 threshold/timeout/region/record_pos/resolution/target_pos/rgb
+  - `tap_scene`：先用 anchor/scene 驗證目前畫面，再用 image/template/templates 點擊；沒有 image 時才退回 x/y
   - `long_press`：x, y, duration_ms
   - `swipe`：x1, y1, x2, y2（取自 nx/ny 與 end_nx/end_ny）, duration_ms
   - `wait`：seconds（純等待步驟）
@@ -217,10 +231,12 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 - 每步可帶：`name`（具體中文名稱，例「點擊 出擊按鈕」）、`wait_after`（該步後等待秒數）
 - 每步可帶畫面驗證：`anchor` / `scene`（操作前必須出現的模板）、`until`（操作後必須等到的模板）
 - 圖片比對欄位可用：`image` 或 `template`、`threshold`（建議 0.6~0.8，預設 0.72）、`timeout`、`region: [x1, y1, x2, y2]`
+- Airtest-like 欄位：`record_pos`（相對畫面中心位置）、`resolution`（錄製解析度）、`target_pos`（1~9 九宮格點擊位置，5=中心）、`rgb`（預設 false，灰階比對）
+- 若一個按鈕可能有多種外觀，可用 `templates: [{image, record_pos, resolution, target_pos, threshold, rgb}, ...]`
 
 # 生成規則（比照 GameTestAi 的精神）
 1. 依 taps 時間順序轉成 steps；kind 對應 action（tap/long_press/swipe）。
-2. 若該 tap 有「已裁切模板」，穩定按鈕/圖示/可重複 UI 優先產生 `tap_image`，image/template 路徑必須照抄上方模板路徑；只有模板不穩或畫面過場才使用 `tap`。
+2. 若該 tap 有「已裁切模板」，穩定按鈕/圖示/可重複 UI 優先產生 `tap_image`，image/record_pos/resolution/target_pos/threshold/rgb 必須照抄上方 Template；只有模板不穩或畫面過場才使用 `tap`。
 3. 重要步驟請加 `until` 驗證下一個畫面；容易誤點的步驟請加 `anchor` 或 `scene` 驗證目前畫面；涉及遊戲啟動、下載、Loading、戰鬥結算或轉場，timeout/ until_timeout 請用 90~180 秒，不要太短。
 4. 兩次觸控的實際間隔反映成前一步的 `wait_after`（間隔近取 1~2 秒；有載入/轉場依畫面判斷加長，上限 90；不要把實測 30 秒以上的載入硬砍成 30）。
 5. 看截圖判斷：若某次觸控落在過場/載入畫面（畫面模糊、無穩定按鈕），該點很可能是使用者在等待時的無意義點擊——改成 `wait` 或 `wait_scene` 步驟並在 name 註明，不要保留成 tap。
@@ -244,6 +260,10 @@ steps:
   - action: tap_image
     name: ...
     image: data/scripts/assets/.../templates/tap00_template.png
+    record_pos: [0.0, 0.31]
+    resolution: [1280, 720]
+    target_pos: 5
+    rgb: false
     threshold: 0.72
     timeout: 60
     until: data/scripts/assets/.../templates/tap01_template.png
@@ -275,8 +295,14 @@ def extract_script_yaml(text: str) -> dict | None:
 
 
 def _has_image_spec(data: dict) -> bool:
-    return any(isinstance(data.get(k), str) and data.get(k).strip()
-               for k in ("image", "template"))
+    if any(isinstance(data.get(k), str) and data.get(k).strip()
+           for k in ("image", "template")):
+        return True
+    templates = data.get("templates")
+    return isinstance(templates, list) and any(
+        isinstance(item, str) and item.strip()
+        or isinstance(item, dict) and _has_image_spec(item)
+        for item in templates)
 
 
 def _clamp_float(value, low: float, high: float, default: float) -> float:
@@ -285,6 +311,18 @@ def _clamp_float(value, low: float, high: float, default: float) -> float:
     except (TypeError, ValueError):
         number = default
     return max(low, min(high, number))
+
+
+def _clean_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "yes", "y", "on"):
+            return True
+        if text in ("0", "false", "no", "n", "off"):
+            return False
+    return default
 
 
 def _clean_visual_value(value):
@@ -300,6 +338,11 @@ def _clean_visual_value(value):
         for key in ("image", "template"):
             if isinstance(value.get(key), str) and value.get(key).strip():
                 out[key] = value[key].strip()[:500]
+        if isinstance(value.get("templates"), list):
+            templates = [_clean_visual_value(v) for v in value["templates"]]
+            templates = [v for v in templates if v is not None]
+            if templates:
+                out["templates"] = templates
         if value.get("threshold") is not None:
             out["threshold"] = _clamp_float(
                 value.get("threshold"), MIN_MATCH_THRESHOLD,
@@ -307,6 +350,23 @@ def _clean_visual_value(value):
         for key in ("timeout", "interval", "scan_step", "max_points"):
             if isinstance(value.get(key), (int, float)):
                 out[key] = value[key]
+        if value.get("target_pos") is not None:
+            try:
+                out["target_pos"] = max(1, min(9, int(value["target_pos"])))
+            except (TypeError, ValueError):
+                pass
+        if isinstance(value.get("record_pos"), (list, tuple)) and len(value["record_pos"]) == 2:
+            try:
+                out["record_pos"] = [float(value["record_pos"][0]), float(value["record_pos"][1])]
+            except (TypeError, ValueError):
+                pass
+        if isinstance(value.get("resolution"), (list, tuple)) and len(value["resolution"]) == 2:
+            try:
+                out["resolution"] = [int(value["resolution"][0]), int(value["resolution"][1])]
+            except (TypeError, ValueError):
+                pass
+        if value.get("rgb") is not None:
+            out["rgb"] = _clean_bool(value.get("rgb"))
         if isinstance(value.get("region"), (list, tuple)) and len(value["region"]) == 4:
             try:
                 out["region"] = [float(v) for v in value["region"]]
@@ -326,6 +386,11 @@ def _copy_visual_fields(src: dict, dst: dict) -> None:
     for key in ("image", "template"):
         if isinstance(src.get(key), str) and src.get(key).strip():
             dst[key] = src[key].strip()[:500]
+    if isinstance(src.get("templates"), list):
+        templates = [_clean_visual_value(v) for v in src["templates"]]
+        templates = [v for v in templates if v is not None]
+        if templates:
+            dst["templates"] = templates
     if src.get("threshold") is not None:
         dst["threshold"] = _clamp_float(
             src.get("threshold"), MIN_MATCH_THRESHOLD,
@@ -334,6 +399,23 @@ def _copy_visual_fields(src: dict, dst: dict) -> None:
                 "max_points", "anchor_timeout", "until_timeout"):
         if isinstance(src.get(key), (int, float)):
             dst[key] = src[key]
+    if src.get("target_pos") is not None:
+        try:
+            dst["target_pos"] = max(1, min(9, int(src["target_pos"])))
+        except (TypeError, ValueError):
+            pass
+    if isinstance(src.get("record_pos"), (list, tuple)) and len(src["record_pos"]) == 2:
+        try:
+            dst["record_pos"] = [float(src["record_pos"][0]), float(src["record_pos"][1])]
+        except (TypeError, ValueError):
+            pass
+    if isinstance(src.get("resolution"), (list, tuple)) and len(src["resolution"]) == 2:
+        try:
+            dst["resolution"] = [int(src["resolution"][0]), int(src["resolution"][1])]
+        except (TypeError, ValueError):
+            pass
+    if src.get("rgb") is not None:
+        dst["rgb"] = _clean_bool(src.get("rgb"))
     if isinstance(src.get("region"), (list, tuple)) and len(src["region"]) == 4:
         try:
             dst["region"] = [float(v) for v in src["region"]]

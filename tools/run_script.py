@@ -70,6 +70,18 @@ def _safe_int(value, default: int = 0) -> int:
         return default
 
 
+def _safe_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "yes", "y", "on"):
+            return True
+        if text in ("0", "false", "no", "n", "off"):
+            return False
+    return default
+
+
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
@@ -199,6 +211,59 @@ class ScriptRunner:
             return {"image": value}
         return value if isinstance(value, dict) else {}
 
+    def _template_candidates(self, spec: dict) -> list[dict]:
+        if not isinstance(spec, dict):
+            return []
+        templates = spec.get("templates")
+        if isinstance(templates, list):
+            out = []
+            base = {
+                k: v for k, v in spec.items()
+                if k not in ("templates", "image", "template")
+            }
+            for item in templates:
+                if isinstance(item, str):
+                    cur = dict(base)
+                    cur["image"] = item
+                    out.append(cur)
+                elif isinstance(item, dict):
+                    cur = dict(base)
+                    cur.update(item)
+                    out.append(cur)
+            if out:
+                return out
+        image_value = spec.get("image") or spec.get("template")
+        if isinstance(image_value, list):
+            out = []
+            base = dict(spec)
+            base.pop("image", None)
+            base.pop("template", None)
+            for item in image_value:
+                cur = dict(base)
+                cur["image"] = item
+                out.append(cur)
+            return out
+        return [spec] if self._image_spec_path(spec) else []
+
+    def _candidate_match(self, png: bytes, candidate: dict) -> dict:
+        path = self._image_spec_path(candidate)
+        if not path:
+            return {"found": False, "score": 0.0,
+                    "error": "missing image/template"}
+        threshold = self._match_threshold(candidate)
+        match = image_match.match_template(
+            png, path, threshold=threshold,
+            region=candidate.get("region"),
+            record_pos=candidate.get("record_pos"),
+            resolution=candidate.get("resolution"),
+            rgb=_safe_bool(candidate.get("rgb"), False),
+            scan_step=_safe_int(candidate.get("scan_step"), 0) or None,
+            max_points=_safe_int(candidate.get("max_points"), 121))
+        for key in ("target_pos", "tap_offset", "offset"):
+            if key in candidate:
+                match[key] = candidate[key]
+        return match
+
     def _wait_visual(self, value, label: str,
                      default_timeout: float | None = None) -> bool:
         if value in (None, "", []):
@@ -214,8 +279,8 @@ class ScriptRunner:
                        for item in value["any"])
 
         spec = self._as_visual_spec(value)
-        path = self._image_spec_path(spec)
-        if not path:
+        candidates = self._template_candidates(spec)
+        if not candidates:
             self._progress(f"{label} 缺少 image/template")
             return False
         if default_timeout is None:
@@ -230,33 +295,30 @@ class ScriptRunner:
         last = {"score": 0.0, "error": ""}
         started = time.time()
         next_progress = started + 10.0
+        label_name = self._candidate_label(candidates)
         if timeout >= 10:
             self._progress(
-                f"{label} 等待畫面 {os.path.basename(path)}，最多 {timeout:g} 秒")
+                f"{label} 等待畫面 {label_name}，最多 {timeout:g} 秒")
         while True:
             png = self._grab_screen()
             if png:
-                last = image_match.match_template(
-                    png, path, threshold=threshold,
-                    region=spec.get("region"),
-                    scan_step=_safe_int(spec.get("scan_step"), 0) or None,
-                    max_points=_safe_int(spec.get("max_points"), 121))
+                last = self._best_candidate_match(png, candidates)
                 if last.get("found"):
                     waited = time.time() - started
                     if waited >= 3:
                         self._progress(
-                            f"{label} 已找到 {os.path.basename(path)}"
+                            f"{label} 已找到 {os.path.basename(last.get('template', label_name))}"
                             f"（{waited:.1f}s，score={last.get('score')}）")
                     return True
             if timeout <= 0 or time.time() >= deadline:
                 break
             if time.time() >= next_progress:
                 self._progress(
-                    f"{label} 還在等待 {os.path.basename(path)}"
+                    f"{label} 還在等待 {label_name}"
                     f"（score={last.get('score', 0.0)}）")
                 next_progress = time.time() + 10.0
             time.sleep(interval)
-        base = os.path.basename(path)
+        base = os.path.basename(last.get("template") or label_name)
         score = last.get("score", 0.0)
         err = f" ({last.get('error')})" if last.get("error") else ""
         self._progress(
@@ -264,8 +326,8 @@ class ScriptRunner:
         return False
 
     def _locate_template(self, step: dict) -> dict:
-        path = self._image_spec_path(step)
-        if not path:
+        candidates = self._template_candidates(step)
+        if not candidates:
             return {"found": False, "score": 0.0,
                     "error": "missing image/template"}
         timeout = _safe_float(
@@ -279,34 +341,53 @@ class ScriptRunner:
         last = {"found": False, "score": 0.0, "error": ""}
         started = time.time()
         next_progress = started + 10.0
+        label_name = self._candidate_label(candidates)
         if timeout >= 10:
             self._progress(
-                f"{step.get('action')} 等待模板 {os.path.basename(path)}，"
+                f"{step.get('action')} 等待模板 {label_name}，"
                 f"最多 {timeout:g} 秒")
         while True:
             png = self._grab_screen()
             if png:
-                last = image_match.match_template(
-                    png, path, threshold=threshold,
-                    region=step.get("region"),
-                    scan_step=_safe_int(step.get("scan_step"), 0) or None,
-                    max_points=_safe_int(step.get("max_points"), 121))
+                last = self._best_candidate_match(png, candidates)
                 if last.get("found"):
                     waited = time.time() - started
                     if waited >= 3:
                         self._progress(
-                            f"{step.get('action')} 已找到 {os.path.basename(path)}"
+                            f"{step.get('action')} 已找到 {os.path.basename(last.get('template', label_name))}"
                             f"（{waited:.1f}s，score={last.get('score')}）")
                     return last
             if timeout <= 0 or time.time() >= deadline:
                 break
             if time.time() >= next_progress:
                 self._progress(
-                    f"{step.get('action')} 還在等待 {os.path.basename(path)}"
+                    f"{step.get('action')} 還在等待 {label_name}"
                     f"（score={last.get('score', 0.0)}）")
                 next_progress = time.time() + 10.0
             time.sleep(interval)
         return last
+
+    def _candidate_label(self, candidates: list[dict]) -> str:
+        names = [
+            os.path.basename(self._image_spec_path(candidate))
+            for candidate in candidates[:3]
+        ]
+        names = [name for name in names if name]
+        if len(candidates) > 3:
+            names.append(f"+{len(candidates) - 3}")
+        return ", ".join(names) or "template"
+
+    def _best_candidate_match(self, png: bytes, candidates: list[dict]) -> dict:
+        best = {"found": False, "score": 0.0, "error": ""}
+        for candidate in candidates:
+            match = self._candidate_match(png, candidate)
+            if match.get("found"):
+                return match
+            if match.get("score", 0.0) > best.get("score", 0.0):
+                best = match
+            elif match.get("error") and not best.get("error"):
+                best = match
+        return best
 
     def _precheck_visuals(self, step: dict) -> bool:
         timeout = _safe_float(
@@ -338,7 +419,14 @@ class ScriptRunner:
             dx, dy = _safe_float(offset[0]), _safe_float(offset[1])
         else:
             dx = dy = 0.0
-        if abs(dx) <= 1 and abs(dy) <= 1:
+        if dx == 0.0 and dy == 0.0:
+            pos = _safe_int(match.get("target_pos", step.get("target_pos", 5)), 5)
+            if 1 <= pos <= 9 and all(k in match for k in ("left", "top", "right", "bottom")):
+                col = (pos - 1) % 3
+                row = (pos - 1) // 3
+                px = int(round(match["left"] + (col + 0.5) * (match["right"] - match["left"]) / 3))
+                py = int(round(match["top"] + (row + 0.5) * (match["bottom"] - match["top"]) / 3))
+        elif abs(dx) <= 1 and abs(dy) <= 1:
             px += int(round(dx * int(match.get("template_width", 1))))
             py += int(round(dy * int(match.get("template_height", 1))))
         else:

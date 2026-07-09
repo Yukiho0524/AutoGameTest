@@ -46,6 +46,9 @@ def normalize_region(region: Any, width: int, height: int) -> tuple[int, int, in
 def match_template(screen_png: bytes, template_path: str, *,
                    threshold: float = DEFAULT_THRESHOLD,
                    region: Any = None,
+                   record_pos: Any = None,
+                   resolution: Any = None,
+                   rgb: bool = False,
                    scan_step: int | None = None,
                    max_points: int = 121) -> dict:
     """Find template_path in screen_png.
@@ -67,54 +70,31 @@ def match_template(screen_png: bytes, template_path: str, *,
         return {"found": False, "score": 0.0,
                 "error": f"template size {tw}x{th} incompatible with screen {sw}x{sh}"}
 
-    x1, y1, x2, y2 = normalize_region(region, sw, sh)
-    x2 = min(x2, sw - tw + 1)
-    y2 = min(y2, sh - th + 1)
-    if x2 <= x1 or y2 <= y1:
-        return {"found": False, "score": 0.0, "error": "search region too small"}
-
     points = _sample_points(tw, th, max_points=max_points)
     step = scan_step or max(3, min(18, min(tw, th) // 8 or 3))
-    best_score = -1.0
-    best_x = x1
-    best_y = y1
-    for yy in range(y1, y2, step):
-        for xx in range(x1, x2, step):
-            score = _score_at(screen, template, xx, yy, points)
-            if score > best_score:
-                best_score = score
-                best_x, best_y = xx, yy
+    search_regions = []
+    predicted = None if region is not None else _predict_region(
+        record_pos, resolution, sw, sh, tw, th)
+    if predicted:
+        search_regions.append(("predicted", predicted))
+    search_regions.append(("full", normalize_region(region, sw, sh)))
 
-    # Refine around the coarse result with a one-pixel local search.
-    refine_radius = max(1, step)
-    rx1 = max(x1, best_x - refine_radius)
-    ry1 = max(y1, best_y - refine_radius)
-    rx2 = min(x2, best_x + refine_radius + 1)
-    ry2 = min(y2, best_y + refine_radius + 1)
-    for yy in range(ry1, ry2):
-        for xx in range(rx1, rx2):
-            score = _score_at(screen, template, xx, yy, points)
-            if score > best_score:
-                best_score = score
-                best_x, best_y = xx, yy
+    best = None
+    for mode, bounds in search_regions:
+        result = _search_region(
+            screen, template, bounds, sw, sh, tw, th, points, step, rgb=rgb)
+        if not result:
+            continue
+        result["search_mode"] = mode
+        if best is None or result["score"] > best["score"]:
+            best = result
+        if result["score"] >= float(threshold):
+            return _format_result(result, threshold, template_path, tw, th, sw, sh)
 
-    cx = best_x + tw / 2.0
-    cy = best_y + th / 2.0
-    score = max(0.0, min(1.0, best_score))
-    return {
-        "found": score >= float(threshold),
-        "score": round(score, 4),
-        "threshold": float(threshold),
-        "x": cx / max(1, sw - 1),
-        "y": cy / max(1, sh - 1),
-        "px": int(round(cx)),
-        "py": int(round(cy)),
-        "template": template_path,
-        "template_width": tw,
-        "template_height": th,
-        "screen_width": sw,
-        "screen_height": sh,
-    }
+    if best is None:
+        return {"found": False, "score": 0.0, "threshold": float(threshold),
+                "error": "search region too small", "template": template_path}
+    return _format_result(best, threshold, template_path, tw, th, sw, sh)
 
 
 def _sample_points(width: int, height: int,
@@ -127,12 +107,107 @@ def _sample_points(width: int, height: int,
     return [(x, y) for y in ys for x in xs]
 
 
+def _search_region(screen, template, bounds: tuple[int, int, int, int],
+                   sw: int, sh: int, tw: int, th: int,
+                   points: list[tuple[int, int]], step: int,
+                   rgb: bool = False) -> dict | None:
+    x1, y1, x2, y2 = bounds
+    x2 = min(x2, sw - tw + 1)
+    y2 = min(y2, sh - th + 1)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    best_score = -1.0
+    best_x = x1
+    best_y = y1
+    for yy in range(y1, y2, step):
+        for xx in range(x1, x2, step):
+            score = _score_at(screen, template, xx, yy, points, rgb=rgb)
+            if score > best_score:
+                best_score = score
+                best_x, best_y = xx, yy
+
+    refine_radius = max(1, step)
+    rx1 = max(x1, best_x - refine_radius)
+    ry1 = max(y1, best_y - refine_radius)
+    rx2 = min(x2, best_x + refine_radius + 1)
+    ry2 = min(y2, best_y + refine_radius + 1)
+    for yy in range(ry1, ry2):
+        for xx in range(rx1, rx2):
+            score = _score_at(screen, template, xx, yy, points, rgb=rgb)
+            if score > best_score:
+                best_score = score
+                best_x, best_y = xx, yy
+    return {"score": max(0.0, min(1.0, best_score)),
+            "left": best_x, "top": best_y,
+            "right": best_x + tw, "bottom": best_y + th}
+
+
+def _format_result(result: dict, threshold: float, template_path: str,
+                   tw: int, th: int, sw: int, sh: int) -> dict:
+    cx = result["left"] + tw / 2.0
+    cy = result["top"] + th / 2.0
+    score = max(0.0, min(1.0, result["score"]))
+    return {
+        "found": score >= float(threshold),
+        "score": round(score, 4),
+        "threshold": float(threshold),
+        "x": cx / max(1, sw - 1),
+        "y": cy / max(1, sh - 1),
+        "px": int(round(cx)),
+        "py": int(round(cy)),
+        "left": int(result["left"]),
+        "top": int(result["top"]),
+        "right": int(result["right"]),
+        "bottom": int(result["bottom"]),
+        "search_mode": result.get("search_mode", "full"),
+        "template": template_path,
+        "template_width": tw,
+        "template_height": th,
+        "screen_width": sw,
+        "screen_height": sh,
+    }
+
+
+def _predict_region(record_pos: Any, resolution: Any, sw: int, sh: int,
+                    tw: int, th: int) -> tuple[int, int, int, int] | None:
+    try:
+        dx, dy = [float(v) for v in record_pos]
+    except (TypeError, ValueError):
+        return None
+    if not (-2.0 <= dx <= 2.0 and -2.0 <= dy <= 2.0):
+        return None
+    try:
+        rw, rh = [float(v) for v in resolution]
+    except (TypeError, ValueError):
+        rw, rh = sw, sh
+    if rw <= 0 or rh <= 0:
+        rw, rh = sw, sh
+    rec_x = (0.5 + dx) * rw
+    rec_y = (0.5 + dy) * rh
+    cx = rec_x * sw / rw
+    cy = rec_y * sh / rh
+    margin = max(120, int(max(tw, th) * 3.0))
+    left = int(cx - tw / 2 - margin)
+    top = int(cy - th / 2 - margin)
+    right = int(cx + tw / 2 + margin)
+    bottom = int(cy + th / 2 + margin)
+    return normalize_region((left, top, right, bottom), sw, sh)
+
+
+def _gray(pixel: tuple[int, int, int]) -> int:
+    r, g, b = pixel
+    return (r * 299 + g * 587 + b * 114) // 1000
+
+
 def _score_at(screen, template, sx: int, sy: int,
-              points: list[tuple[int, int]]) -> float:
+              points: list[tuple[int, int]], rgb: bool = False) -> float:
     total = 0
     for tx, ty in points:
         sr, sg, sb = screen[sy + ty][sx + tx]
         tr, tg, tb = template[ty][tx]
-        total += abs(sr - tr) + abs(sg - tg) + abs(sb - tb)
-    max_diff = len(points) * 255 * 3
+        if rgb:
+            total += abs(sr - tr) + abs(sg - tg) + abs(sb - tb)
+        else:
+            total += abs(_gray((sr, sg, sb)) - _gray((tr, tg, tb)))
+    max_diff = len(points) * 255 * (3 if rgb else 1)
     return 1.0 - (total / max_diff if max_diff else 1.0)
