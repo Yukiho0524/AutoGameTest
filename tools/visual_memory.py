@@ -36,7 +36,16 @@ def main(argv=None) -> int:
     add.add_argument("--risk", default="safe")
     add.add_argument("--regions-json", default="", help="JSON list of UI regions")
     add.add_argument("--actions-json", default="", help="JSON list of safe action hints")
+    add.add_argument("--complete", action="store_true", help="mark this screen/action as task-completing")
+    add.add_argument("--handoff", action="store_true", help="handoff to Codex after this screen/action")
+    add.add_argument("--fast-match", action="store_true", help="allow ahash fuzzy matching for safe fast rules")
+    add.add_argument("--fast-max-distance", type=int, default=None, help="ahash max distance for fast matching")
+    add.add_argument("--max-repeats", type=int, default=None, help="max repeats on the same unchanged screen")
+    add.add_argument("--priority", type=int, default=None, help="fast rule priority when promoted")
     add.add_argument("--no-copy", action="store_true", help="store original path only")
+
+    promote = sub.add_parser("promote", help="promote safe actionable memory into fast rules")
+    promote.add_argument("game_id")
 
     ls = sub.add_parser("list", help="list visual memory")
     ls.add_argument("game_id")
@@ -60,7 +69,17 @@ def main(argv=None) -> int:
             actions=_parse_json(args.actions_json, []),
             source="cli",
             copy_image=not args.no_copy,
+            complete=args.complete,
+            handoff=args.handoff,
+            priority=args.priority,
+            fast_match=args.fast_match,
+            fast_max_distance=args.fast_max_distance,
+            max_repeats=args.max_repeats,
         )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if args.cmd == "promote":
+        result = visual_memory.promote_safe_rules(args.game_id)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "list":

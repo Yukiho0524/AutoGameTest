@@ -631,6 +631,7 @@ def _normalize_rule(rule: dict, source: str) -> dict | None:
         "actions": clean_actions,
         "complete": bool(rule.get("complete", False)),
         "handoff": bool(rule.get("handoff", False)),
+        "max_repeats": max(1, _safe_int(rule.get("max_repeats", 1), 1)),
         "source": source,
         "learned_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }

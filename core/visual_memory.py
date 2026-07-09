@@ -137,7 +137,7 @@ def _clean_actions(actions: Any) -> list[dict]:
         if not isinstance(action, dict):
             continue
         item = {}
-        for key in ("type", "note", "risk"):
+        for key in ("type", "note", "risk", "message", "package"):
             if action.get(key) is not None:
                 item[key] = str(action[key])[:200]
         for key in ("x", "y", "x1", "y1", "x2", "y2", "ms"):
@@ -146,9 +146,45 @@ def _clean_actions(actions: Any) -> list[dict]:
                     item[key] = int(action[key])
                 except (TypeError, ValueError):
                     pass
+        for key in ("seconds", "wait"):
+            if action.get(key) is not None:
+                try:
+                    item[key] = float(action[key])
+                except (TypeError, ValueError):
+                    pass
         if item:
             clean.append(item)
     return clean[:30]
+
+
+def _clean_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "yes", "y", "on"):
+            return True
+        if text in ("0", "false", "no", "n", "off"):
+            return False
+    return default
+
+
+def _clean_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clean_rule_hints(raw: dict) -> dict:
+    hints = {}
+    for key in ("complete", "handoff", "fast_match"):
+        if key in raw:
+            hints[key] = _clean_bool(raw.get(key), False)
+    for key in ("priority", "max_repeats", "fast_max_distance", "max_distance"):
+        if raw.get(key) is not None:
+            hints[key] = _clean_int(raw.get(key), 0)
+    return hints
 
 
 def _entry_id(label: str, signature: dict) -> str:
@@ -161,7 +197,11 @@ def remember_image(game_id: str, image_path: str, label: str = "",
                    note: str = "", tags: Any = None, state: str = "",
                    regions: Any = None, actions: Any = None,
                    risk: str = "safe", source: str = "manual",
-                   copy_image: bool = True) -> dict:
+                   copy_image: bool = True, complete: bool = False,
+                   handoff: bool = False, priority: int | None = None,
+                   fast_match: bool = False,
+                   fast_max_distance: int | None = None,
+                   max_repeats: int | None = None) -> dict:
     full = _abs_path(image_path)
     if not os.path.isfile(full):
         raise FileNotFoundError(full)
@@ -194,6 +234,14 @@ def remember_image(game_id: str, image_path: str, label: str = "",
         "source": source,
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+    entry.update(_clean_rule_hints({
+        "complete": complete,
+        "handoff": handoff,
+        "priority": priority,
+        "fast_match": fast_match,
+        "fast_max_distance": fast_max_distance,
+        "max_repeats": max_repeats,
+    }))
     data = load_memory(game_id)
     images = data.get("images", [])
     updated = False
@@ -236,11 +284,22 @@ def merge_entries(game_id: str, entries: list[dict], source: str = "codex-output
                     risk=str(raw.get("risk") or "safe"),
                     source=source,
                     copy_image=True,
+                    complete=_clean_bool(raw.get("complete"), False),
+                    handoff=_clean_bool(raw.get("handoff"), False),
+                    priority=raw.get("priority"),
+                    fast_match=_clean_bool(raw.get("fast_match"), False),
+                    fast_max_distance=raw.get("fast_max_distance", raw.get("max_distance")),
+                    max_repeats=raw.get("max_repeats"),
                 )
                 if result["updated"]:
                     updated += 1
                 else:
                     added += 1
+                images = {
+                    str(e.get("id")): e
+                    for e in load_memory(game_id).get("images", [])
+                    if isinstance(e, dict)
+                }
             except (OSError, ValueError):
                 continue
             continue
@@ -263,6 +322,7 @@ def merge_entries(game_id: str, entries: list[dict], source: str = "codex-output
             "source": source,
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+        entry.update(_clean_rule_hints(raw))
         if entry["id"] in images:
             images[entry["id"]].update(entry)
             updated += 1
@@ -271,10 +331,37 @@ def merge_entries(game_id: str, entries: list[dict], source: str = "codex-output
             images[entry["id"]] = entry
             added += 1
     if added or updated:
+        data = load_memory(game_id)
         data["images"] = list(images.values())
         save_memory(game_id, data)
-    return {"added": added, "updated": updated, "total": len(load_memory(game_id).get("images", [])),
-            "path": memory_path(game_id)}
+    fast_rules = promote_safe_rules(game_id) if added or updated else {
+        "added": 0, "updated": 0, "total": 0, "path": "",
+        "candidates": 0,
+    }
+    return {
+        "added": added,
+        "updated": updated,
+        "total": len(load_memory(game_id).get("images", [])),
+        "path": memory_path(game_id),
+        "fast_rules": fast_rules,
+    }
+
+
+def promote_safe_rules(game_id: str) -> dict:
+    """Promote actionable safe visual memories into explicit fast rules."""
+    rules = fast_agent.load_visual_memory_rules(game_id)
+    if not rules:
+        return {
+            "added": 0,
+            "updated": 0,
+            "total": len(fast_agent.load_rules(game_id).get("rules", [])),
+            "path": fast_agent._rules_path(game_id),
+            "candidates": 0,
+        }
+    merged = fast_agent.merge_rules(
+        game_id, rules, source="visual-memory-promoted")
+    merged["candidates"] = len(rules)
+    return merged
 
 
 def extract_memory_block(text: str) -> list[dict]:
@@ -360,10 +447,17 @@ def format_prompt_context(game_id: str, limit: int = 20) -> str:
         '    "note": "可從此畫面進入任務/活動/信箱。",',
         '    "tags": ["home", "safe"],',
         '    "risk": "safe",',
+        '    "fast_match": true,',
+        '    "fast_max_distance": 2,',
+        '    "priority": 10,',
+        '    "max_repeats": 1,',
+        '    "complete": false,',
+        '    "handoff": false,',
         '    "regions": [{"name": "任務", "x": 1000, "y": 620, "w": 120, "h": 80, "note": "進入任務"}],',
-        '    "actions": [{"type": "tap", "x": 1000, "y": 620, "note": "打開任務"}]',
+        '    "actions": [{"type": "tap", "x": 1000, "y": 620, "wait": 0.8, "note": "打開任務"}]',
         "  }",
         "]",
         "```",
+        "只有 safe / low / routine 且帶安全 actions 的圖片記憶會自動晉升為 fast rules；登入、付款、轉蛋、PVP 只能記風險，不可給安全自動動作。",
     ])
     return "\n".join(lines)

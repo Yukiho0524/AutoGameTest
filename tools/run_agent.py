@@ -390,6 +390,10 @@ def analyze_performance(performance: dict, fast_result: dict | None = None,
         recommendations.append("觀察各分段耗時；若某段仍偏慢，將該段畫面沉澱成 fast rules 或圖片記憶。")
     if fast_rules_merge and (fast_rules_merge.get("added") or fast_rules_merge.get("updated")):
         recommendations.append("本次已合併新的快速規則，下一次遇到同類畫面應會更快。")
+    visual_fast_rules = (visual_memory_merge or {}).get("fast_rules") or {}
+    if visual_fast_rules.get("added") or visual_fast_rules.get("updated"):
+        recommendations.append(
+            "本次圖片記憶已自動晉升為快速規則，下一次遇到同畫面會先走本地判斷。")
     if visual_memory_merge and (visual_memory_merge.get("added") or visual_memory_merge.get("updated")):
         recommendations.append("本次已合併新的圖片記憶，後續畫面辨識會更穩。")
     if not observations:
@@ -895,6 +899,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     if learned_visuals:
         visual_memory_merge = visual_memory.merge_entries(
             game.get("id", ""), learned_visuals, source="codex-output")
+    visual_fast_rules_merge = (visual_memory_merge or {}).get("fast_rules")
     learned_lessons = extract_skill_lessons(result.get("output", ""))
     skill_lessons_update = None
     if learned_lessons:
@@ -923,6 +928,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             attempts=_summarize_attempts(result.get("attempts", [])),
             fast_decision=fast_result,
             fast_rules=fast_rules_merge,
+            fast_rules_from_visual_memory=visual_fast_rules_merge,
             visual_memory=visual_memory_merge,
             skill_lessons=skill_lessons_update,
             performance=performance,
@@ -946,6 +952,8 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             }
     if fast_rules_merge:
         result["fast_rules"] = fast_rules_merge
+    if visual_fast_rules_merge:
+        result["fast_rules_from_visual_memory"] = visual_fast_rules_merge
     if fast_result:
         result["fast_decision"] = fast_result
     if visual_memory_merge:
