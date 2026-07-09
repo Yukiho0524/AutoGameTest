@@ -611,6 +611,9 @@ async function loadJobDetail(id) {
     <span>${esc(job.created || "")}</span>`;
   $("#job-payload").textContent = formatJson(job.payload);
   $("#job-result").textContent = job.result ? String(job.result) : "(尚無結果)";
+  $("#job-performance").textContent = job.performance
+    ? formatJson(job.performance)
+    : "(尚無效能資料)";
   renderLog("stdout", logs.stdout);
   renderLog("stderr", logs.stderr);
 }

@@ -19,7 +19,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
+import time
 import traceback
 
 for _s in (sys.stdout, sys.stderr):
@@ -45,6 +47,9 @@ def _summarize_attempts(attempts: list[dict]) -> list[dict]:
             "found": a.get("found"),
             "model": a.get("model"),
             "reasoning_effort": a.get("reasoning_effort"),
+            "elapsed_seconds": a.get("elapsed_seconds"),
+            "prompt_chars": a.get("prompt_chars"),
+            "segment_index": a.get("segment_index"),
             "quota": a.get("quota"),
             "rc": a.get("rc"),
             "detail": (a.get("detail") or "")[:500],
@@ -64,6 +69,113 @@ def _resolve_codex_settings(model: str | None = None,
     if reasoning_effort not in ai_runner.CODEX_REASONING_EFFORTS:
         reasoning_effort = "high"
     return model, reasoning_effort
+
+
+def split_numbered_task(task: str) -> list[str]:
+    """Split 1./2./3. style task text into checkpoints."""
+    lines = [line.strip() for line in str(task or "").splitlines() if line.strip()]
+    if not lines:
+        return []
+    parts: list[str] = []
+    current: list[str] = []
+    marker = re.compile(r"^\s*(?:\d+|[一二三四五六七八九十]+)[\.\)、:：]\s*(.+)$")
+    saw_marker = False
+    for line in lines:
+        match = marker.match(line)
+        if match:
+            saw_marker = True
+            if current:
+                parts.append(" ".join(current).strip())
+            current = [match.group(1).strip()]
+        elif current:
+            current.append(line)
+        else:
+            current = [line]
+    if current:
+        parts.append(" ".join(current).strip())
+    if not saw_marker or len(parts) < 2:
+        text = str(task or "").strip()
+        return [text] if text else []
+    return [part for part in parts if part]
+
+
+def _count_artifact_pngs(fast_result: dict | None) -> int:
+    artifact_dir = (fast_result or {}).get("artifact_dir")
+    if not artifact_dir or not os.path.isdir(artifact_dir):
+        return 0
+    return len([
+        name for name in os.listdir(artifact_dir)
+        if name.lower().endswith(".png")
+    ])
+
+
+def _base_metrics(game: dict, task: str, model: str,
+                  reasoning_effort: str) -> dict:
+    persona = _read(game.get("agent_path", ""))
+    skill = _read(game.get("skill_path", ""))
+    return {
+        "mode": "single",
+        "model": model,
+        "reasoning_effort": reasoning_effort,
+        "task_chars": len(task or ""),
+        "persona_chars": len(persona),
+        "skill_chars": len(skill),
+        "visual_context_chars": 0,
+        "fast_context_chars": 0,
+        "prompt_chars": 0,
+        "segments_total": 1,
+        "segments_completed": 0,
+        "segment_timeout_seconds": None,
+        "fast_seconds": 0,
+        "codex_seconds": 0,
+        "total_seconds": 0,
+        "artifact_png_count": 0,
+        "segments": [],
+    }
+
+
+def _segment_task(overall_task: str, part: str, index: int, total: int,
+                  previous_summaries: list[str]) -> str:
+    previous = "\n".join(
+        f"- {summary[:500]}" for summary in previous_summaries[-3:]
+        if summary.strip())
+    if not previous:
+        previous = "- 尚無"
+    return f"""這是一個分段任務，請只完成目前這一段，完成後就停止，不要提前執行後面的段落。
+
+整體任務：
+{overall_task}
+
+已完成段落摘要：
+{previous}
+
+目前段落（{index}/{total}）：
+{part}
+
+執行要求：
+- 本段開始時先重新截圖確認目前畫面，不要依賴上一段截圖。
+- 只做目前段落需要的低風險操作；遇到登入、付款、轉蛋、PVP 或不確定畫面就停止回報。
+- 本段完成後輸出一段 `CHECKPOINT_SUMMARY:`，簡短說明目前畫面、已完成什麼、下一段可以從哪裡接續。
+"""
+
+
+def _checkpoint_summary(output: str) -> str:
+    text = output or ""
+    marker = "CHECKPOINT_SUMMARY:"
+    idx = text.rfind(marker)
+    if idx >= 0:
+        text = text[idx + len(marker):]
+    lines = [line.strip(" -") for line in text.splitlines() if line.strip()]
+    return " ".join(lines[:4])[:800]
+
+
+def _merge_segment_attempts(segment_result: dict, index: int) -> list[dict]:
+    attempts = []
+    for attempt in segment_result.get("attempts", []):
+        item = dict(attempt)
+        item["segment_index"] = index
+        attempts.append(item)
+    return attempts
 
 
 def _format_job_result(result: dict) -> str:
@@ -199,7 +311,9 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
               fast_mode=True, fast_steps=8,
               codex_model: str | None = None,
               codex_reasoning_effort: str | None = None,
+              segment_mode: bool = True,
               print_only=False) -> dict:
+    total_start = time.perf_counter()
     if agent_id:
         agent = store.get_agent(agent_id)
         if not agent:
@@ -216,6 +330,8 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
 
     codex_model, codex_reasoning_effort = _resolve_codex_settings(
         codex_model, codex_reasoning_effort)
+    performance = _base_metrics(
+        game, task, codex_model, codex_reasoning_effort)
 
     if job_id:
         store.update_job(
@@ -223,9 +339,11 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             status="running",
             codex_model=codex_model,
             codex_reasoning_effort=codex_reasoning_effort,
+            performance=performance,
         )
 
     fast_result = None
+    fast_start = time.perf_counter()
     if fast_mode and game.get("control") == "emulator" and not print_only:
         try:
             fast_result = fast_agent.run_fast_rules(
@@ -238,8 +356,17 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
                 "handoff_reason": f"fast layer crashed: {e}",
                 "error_trace": traceback.format_exc()[:4000],
             }
+    performance["fast_seconds"] = round(time.perf_counter() - fast_start, 3)
+    performance["artifact_png_count"] = _count_artifact_pngs(fast_result)
+    if fast_result:
+        performance["fast_steps"] = len(fast_result.get("steps", []))
+        performance["fast_handoff_reason"] = fast_result.get("handoff_reason", "")
+        performance["fast_rules_loaded"] = fast_result.get("fast_rules_loaded", 0)
+        performance["visual_rules_loaded"] = fast_result.get("visual_rules_loaded", 0)
+    if fast_result and not print_only:
         if job_id:
-            store.update_job(job_id, fast_decision=fast_result)
+            store.update_job(job_id, fast_decision=fast_result,
+                             performance=performance)
         if fast_result.get("completed"):
             output = (
                 "快速規則已完成本次任務。\n\n"
@@ -253,6 +380,9 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
                 "attempts": [],
                 "fast_decision": fast_result,
             }
+            performance["mode"] = "fast-rules"
+            performance["segments_completed"] = 1
+            performance["total_seconds"] = round(time.perf_counter() - total_start, 3)
             if job_id:
                 store.update_job(
                     job_id,
@@ -261,25 +391,113 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
                     run_reason=result["reason"],
                     attempts=[],
                     fast_decision=fast_result,
+                    performance=performance,
                     result=_format_job_result(result))
             return result
 
     fast_context = fast_agent.format_fast_context(game.get("id", ""), fast_result)
     visual_context = visual_memory.format_prompt_context(game.get("id", ""))
+    performance["fast_context_chars"] = len(fast_context)
+    performance["visual_context_chars"] = len(visual_context)
+    task_parts = split_numbered_task(task)
+    use_segments = segment_mode and len(task_parts) >= 2
+    performance["mode"] = "segmented" if use_segments else "single"
+    performance["segments_total"] = len(task_parts) if use_segments else 1
+    segment_timeout = max(300, int(timeout / max(1, len(task_parts)))) if use_segments else timeout
+    performance["segment_timeout_seconds"] = segment_timeout if use_segments else None
     prompt = build_agent_prompt(
         game, task, fast_context=fast_context, visual_context=visual_context)
+    performance["prompt_chars"] = len(prompt)
     if print_only:
-        return {"ok": True, "prompt": prompt}
+        return {"ok": True, "prompt": prompt, "performance": performance}
 
     # emulator agents need adb (network + external exe) -> full access sandbox
     sandbox = "danger-full-access" if game.get("control") == "emulator" else "workspace-write"
 
     try:
-        result = ai_runner.run_with_fallback(
-            prompt, cwd=ROOT, timeout=timeout, engine=engine,
-            fallback=fallback, codex_sandbox=sandbox,
-            codex_model=codex_model,
-            codex_reasoning_effort=codex_reasoning_effort)
+        if use_segments:
+            outputs: list[str] = []
+            attempts: list[dict] = []
+            summaries: list[str] = []
+            failed_reason = ""
+            for index, part in enumerate(task_parts, 1):
+                segment_task = _segment_task(task, part, index, len(task_parts), summaries)
+                segment_prompt = build_agent_prompt(
+                    game, segment_task,
+                    fast_context=fast_context,
+                    visual_context=visual_context)
+                segment_info = {
+                    "index": index,
+                    "task": part[:500],
+                    "prompt_chars": len(segment_prompt),
+                    "timeout_seconds": segment_timeout,
+                    "status": "running",
+                }
+                performance["segments"].append(segment_info)
+                if job_id:
+                    store.update_job(
+                        job_id,
+                        progress={
+                            "current_segment": index,
+                            "total_segments": len(task_parts),
+                            "task": part,
+                        },
+                        performance=performance,
+                    )
+                segment_result = ai_runner.run_with_fallback(
+                    segment_prompt, cwd=ROOT, timeout=segment_timeout,
+                    engine=engine, fallback=fallback,
+                    codex_sandbox=sandbox,
+                    codex_model=codex_model,
+                    codex_reasoning_effort=codex_reasoning_effort)
+                segment_attempts = _merge_segment_attempts(segment_result, index)
+                attempts.extend(segment_attempts)
+                elapsed = sum(float(a.get("elapsed_seconds") or 0) for a in segment_attempts)
+                output = segment_result.get("output", "")
+                summary = _checkpoint_summary(output)
+                if summary:
+                    summaries.append(summary)
+                segment_info.update({
+                    "status": "done" if segment_result.get("ok") else "error",
+                    "ok": bool(segment_result.get("ok")),
+                    "elapsed_seconds": round(elapsed, 3),
+                    "output_chars": len(output),
+                    "reason": segment_result.get("reason", ""),
+                    "summary": summary,
+                })
+                performance["segments_completed"] = index if segment_result.get("ok") else index - 1
+                performance["codex_seconds"] = round(
+                    sum(float(a.get("elapsed_seconds") or 0) for a in attempts), 3)
+                if job_id:
+                    store.update_job(job_id, performance=performance)
+                outputs.append(
+                    f"## Segment {index}/{len(task_parts)}: {part}\n\n{output}".strip())
+                if not segment_result.get("ok"):
+                    failed_reason = (
+                        f"segment {index}/{len(task_parts)} failed: "
+                        f"{segment_result.get('reason', '')}")
+                    break
+            ok = not failed_reason
+            result = {
+                "engine_used": "codex-segmented",
+                "ok": ok,
+                "output": "\n\n".join(outputs),
+                "attempts": attempts,
+                "reason": (
+                    f"completed {len(task_parts)} segments"
+                    if ok else failed_reason),
+            }
+        else:
+            result = ai_runner.run_with_fallback(
+                prompt, cwd=ROOT, timeout=timeout, engine=engine,
+                fallback=fallback, codex_sandbox=sandbox,
+                codex_model=codex_model,
+                codex_reasoning_effort=codex_reasoning_effort)
+            performance["segments_completed"] = 1 if result.get("ok") else 0
+            performance["codex_seconds"] = round(sum(
+                float(a.get("elapsed_seconds") or 0)
+                for a in result.get("attempts", [])
+            ), 3)
     except Exception as e:
         result = {
             "engine_used": "none",
@@ -289,6 +507,9 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             "attempts": [],
             "traceback": traceback.format_exc(),
         }
+    performance["total_seconds"] = round(time.perf_counter() - total_start, 3)
+    performance["artifact_png_count"] = _count_artifact_pngs(fast_result)
+    result["performance"] = performance
 
     learned_rules = fast_agent.extract_rule_block(result.get("output", ""))
     fast_rules_merge = None
@@ -320,6 +541,8 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             fast_rules=fast_rules_merge,
             visual_memory=visual_memory_merge,
             skill_lessons=skill_lessons_update,
+            performance=performance,
+            progress=None,
             result=_format_job_result(result),
             error_trace=(result.get("traceback") or "")[:4000] or None)
     if fast_rules_merge:
@@ -346,6 +569,7 @@ def main(argv=None):
                     choices=sorted(ai_runner.CODEX_REASONING_EFFORTS),
                     help="Codex reasoning effort，預設 high")
     ap.add_argument("--no-fast", action="store_true", help="停用 emulator 快速判斷層")
+    ap.add_argument("--no-segment", action="store_true", help="停用條列任務自動分段")
     ap.add_argument("--fast-steps", type=int, default=8, help="快速規則最多連續執行步數")
     ap.add_argument("--print-prompt", action="store_true", help="只組裝並印出 prompt，不執行")
     args = ap.parse_args(argv)
@@ -366,6 +590,7 @@ def main(argv=None):
                     fast_steps=args.fast_steps,
                     codex_model=args.model,
                     codex_reasoning_effort=args.reasoning_effort,
+                    segment_mode=not args.no_segment,
                     print_only=args.print_prompt)
 
     if args.print_prompt and res.get("ok"):

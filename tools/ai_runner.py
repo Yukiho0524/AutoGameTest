@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -108,9 +109,12 @@ def build_codex_args(exe: str, sandbox: str, last_file: str,
 def run_codex(prompt: str, cwd: str | None, timeout: int, sandbox: str,
               model: str | None = None,
               reasoning_effort: str | None = None) -> dict:
+    started = time.perf_counter()
     exe = find_codex()
     if not exe:
         return {"engine": "codex", "ok": False, "found": False,
+                "elapsed_seconds": round(time.perf_counter() - started, 3),
+                "prompt_chars": len(prompt or ""),
                 "detail": "codex.exe not found"}
     model = _clean_model(model or configured_codex_model())
     reasoning_effort = _clean_reasoning_effort(
@@ -134,6 +138,8 @@ def run_codex(prompt: str, cwd: str | None, timeout: int, sandbox: str,
     except subprocess.TimeoutExpired:
         return {"engine": "codex", "ok": False, "found": True,
                 "model": model, "reasoning_effort": reasoning_effort,
+                "elapsed_seconds": round(time.perf_counter() - started, 3),
+                "prompt_chars": len(prompt or ""),
                 "detail": f"timeout after {timeout}s"}
     out = ""
     if os.path.exists(last_file):
@@ -147,6 +153,8 @@ def run_codex(prompt: str, cwd: str | None, timeout: int, sandbox: str,
     ok = proc.returncode == 0 and bool(out)
     return {"engine": "codex", "ok": ok, "found": True, "rc": proc.returncode,
             "model": model, "reasoning_effort": reasoning_effort,
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "prompt_chars": len(prompt or ""),
             "output": out, "detail": _clip((proc.stderr or "").strip(), 2000)}
 
 
@@ -200,6 +208,8 @@ def main(argv=None):
         {"engine": a["engine"], "ok": a.get("ok"),
          "found": a.get("found"), "model": a.get("model"),
          "reasoning_effort": a.get("reasoning_effort"),
+         "elapsed_seconds": a.get("elapsed_seconds"),
+         "prompt_chars": a.get("prompt_chars"),
          "detail": a.get("detail", "")[:120]}
         for a in result.get("attempts", [])
     ]
