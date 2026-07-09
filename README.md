@@ -118,6 +118,7 @@ data/
   logs/                  # 執行 stdout/stderr 與診斷日誌
 .codex/
   skills/<遊戲名>/SKILL.md    # 遊戲知識庫
+  skills/mobile-game-controls/SKILL.md # 共用手機遊戲操作詞彙
   agents/<遊戲名>-player.md   # 綁定該遊戲的代打 agent
 AGENTS.md                # Codex 專案指引（處理待辦任務、鐵則、資料流）
 ```
@@ -176,6 +177,7 @@ python tools/ai_runner.py "你的提示"
 ### 跑 Agent
 
 `tools/run_agent.py` 會把「角色 persona + 遊戲 skill 知識 + 操作指令表 + 任務」組成一份自足 prompt，交給 Codex 執行。
+Android 模擬器 agent 會額外載入 `.codex/skills/mobile-game-controls/SKILL.md`，把「點擊、雙擊、長按、拖曳、滑動、捲動」等手機遊戲口語操作轉成 ADB 動作語意。
 背景 AI 任務預設 timeout 為 3600 秒（60 分鐘），可在控制台「設定」分頁調整，也可用 `--timeout` 覆寫；手動執行也可用 `--model gpt-5.5 --reasoning-effort high` 明確指定。
 控制台背景執行會對 5 步以上的條列任務啟用自動 checkpoint，每 2 個編號步驟跑一段 Codex，降低單一長任務後段上下文越積越慢的情況。手動 CLI 可用 `--auto-segment` 開啟相同行為，或用 `--no-segment` 明確停用；每段預設最多等待 600 秒，也可用 `--segment-timeout` 調整。
 任務詳情會顯示「效能診斷」與 `performance`，包含 prompt 大小、fast layer 秒數、啟動模擬器/遊戲/首張截圖階段耗時、Codex 秒數、分段耗時與完成段落數，方便定位慢在哪一段。runner 會自動產生瓶頸觀察與優化建議；若遊戲已在前景，會跳過重新 launch app。ADB 截圖優先走 `exec-out screencap -p`，失敗才 fallback 到 `/sdcard` 檔案截圖，並會在 job progress 顯示 fast layer / Codex handoff 階段。

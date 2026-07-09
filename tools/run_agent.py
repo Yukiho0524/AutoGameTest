@@ -40,6 +40,7 @@ import ai_runner  # noqa: E402
 DEFAULT_SEGMENT_TIMEOUT_SECONDS = 600
 AUTO_SEGMENT_MIN_STEPS = 5
 DEFAULT_SEGMENT_BATCH_SIZE = 2
+COMMON_MOBILE_CONTROLS_SKILL = ".codex/skills/mobile-game-controls/SKILL.md"
 
 
 def _summarize_attempts(attempts: list[dict]) -> list[dict]:
@@ -442,9 +443,11 @@ def build_agent_prompt(game: dict, task: str, fast_context: str = "",
     """Compose a self-contained agent prompt any engine can execute."""
     persona = _read(game.get("agent_path", ""))
     skill = _read(game.get("skill_path", ""))
+    common_skill = ""
     lc = game.get("launch", {})
 
     if game.get("control") == "emulator":
+        common_skill = _read(COMMON_MOBILE_CONTROLS_SKILL)
         emulator = adb.normalize_emulator(lc.get("emulator", "ldplayer"))
         serial = lc.get("serial") or adb.serial_for(lc.get("instance", 0), emulator)
         adb_path = adb.adb_path_for(emulator)
@@ -466,6 +469,11 @@ computer-use 應用名稱「{cu}」。
 注意：桌面遊戲需 computer-use（截圖+滑鼠鍵盤），headless/Codex 環境可能沒有這個工具。
 若你（執行引擎）沒有 computer-use 能力，請不要盲目操作，改為回報「桌面 agent 需在具備 computer-use 的互動 session 執行」。"""
 
+    common_skill_block = (
+        f"# 共用手機操作詞彙（Skill）\n{common_skill}"
+        if common_skill else ""
+    )
+
     return f"""你是一位遊戲玩家，代替使用者操作《{game.get('name','')}》完成指定任務。
 
 # 角色與守則
@@ -473,6 +481,8 @@ computer-use 應用名稱「{cu}」。
 
 # 遊戲知識庫（Skill）
 {skill or '（尚無 skill，請先謹慎探索並記錄）'}
+
+{common_skill_block}
 
 {control}
 
