@@ -38,6 +38,8 @@ from core import store, adb, fast_agent, visual_memory  # noqa: E402
 import ai_runner  # noqa: E402
 
 DEFAULT_SEGMENT_TIMEOUT_SECONDS = 600
+AUTO_SEGMENT_MIN_STEPS = 5
+DEFAULT_SEGMENT_BATCH_SIZE = 2
 
 
 def _summarize_attempts(attempts: list[dict]) -> list[dict]:
@@ -99,6 +101,29 @@ def split_numbered_task(task: str) -> list[str]:
         text = str(task or "").strip()
         return [text] if text else []
     return [part for part in parts if part]
+
+
+def batch_task_parts(parts: list[str], batch_size: int) -> list[dict]:
+    """Group numbered steps into small checkpoint batches."""
+    try:
+        batch_size = int(batch_size)
+    except (TypeError, ValueError):
+        batch_size = DEFAULT_SEGMENT_BATCH_SIZE
+    batch_size = max(1, min(4, batch_size))
+    batches: list[dict] = []
+    for start in range(0, len(parts), batch_size):
+        chunk = parts[start:start + batch_size]
+        numbered = "\n".join(
+            f"{step_no}. {text}" for step_no, text in
+            enumerate(chunk, start=start + 1)
+        )
+        batches.append({
+            "start_step": start + 1,
+            "end_step": start + len(chunk),
+            "steps": chunk,
+            "task": numbered,
+        })
+    return batches
 
 
 def _count_artifact_pngs(fast_result: dict | None) -> int:
@@ -183,6 +208,29 @@ def analyze_performance(performance: dict, fast_result: dict | None = None,
             "detail": str(item.get("detail") or ""),
             "ok": item.get("ok"),
         })
+    segment_stages: list[dict] = []
+    for item in performance.get("segments", []):
+        if not isinstance(item, dict):
+            continue
+        seconds = _float_seconds(item.get("elapsed_seconds"))
+        if seconds <= 0:
+            continue
+        index = item.get("index") or len(segment_stages) + 1
+        start_step = item.get("start_step")
+        end_step = item.get("end_step")
+        step_range = (
+            f"steps {start_step}-{end_step}"
+            if start_step and end_step else "steps unknown")
+        detail = item.get("summary") or item.get("task") or ""
+        row = {
+            "stage": f"codex_segment_{index}",
+            "label": f"Codex 分段 {index}",
+            "seconds": round(seconds, 3),
+            "detail": f"{step_range}: {str(detail)[:140]}",
+            "ok": item.get("ok"),
+        }
+        segment_stages.append(row)
+        stages.append(row)
     codex_seconds = _float_seconds(performance.get("codex_seconds"))
     if codex_seconds > 0:
         stages.append({
@@ -240,7 +288,12 @@ def analyze_performance(performance: dict, fast_result: dict | None = None,
         observations.append(f"Prompt 長度 {prompt_chars} 字元，可能拖慢模型判斷。")
         recommendations.append("整理 Skill，保留穩定流程與畫面規則，移除一次性流水帳。")
     if performance.get("mode") == "segmented":
-        recommendations.append("目前是分段模式，會多次啟動 Codex；一般操作建議維持單輪模式。")
+        if segment_stages:
+            slowest_segment = max(segment_stages, key=lambda row: row["seconds"])
+            observations.append(
+                f"已分成 {len(segment_stages)} 段；最慢分段是"
+                f"「{slowest_segment['label']}」，耗時 {slowest_segment['seconds']} 秒。")
+        recommendations.append("觀察各分段耗時；若某段仍偏慢，將該段畫面沉澱成 fast rules 或圖片記憶。")
     if fast_rules_merge and (fast_rules_merge.get("added") or fast_rules_merge.get("updated")):
         recommendations.append("本次已合併新的快速規則，下一次遇到同類畫面應會更快。")
     if visual_memory_merge and (visual_memory_merge.get("added") or visual_memory_merge.get("updated")):
@@ -287,7 +340,8 @@ def _segment_task(overall_task: str, part: str, index: int, total: int,
 執行要求：
 - 本段開始時先重新截圖確認目前畫面，不要依賴上一段截圖。
 - 只做目前段落需要的低風險操作；不要操作下一段。
-- 本段最多做 1 個 UI 轉場；通常 1 到 3 次 tap/swipe 就應該停止。
+- 本段通常包含 1 到 2 個使用者步驟；以最短路徑完成，通常 2 到 6 次 tap/swipe 就應該停止。
+- 如果進入本段時畫面已經符合部分或全部目標，直接把已完成的部分記入摘要，不要退回重做。
 - 一旦畫面符合本段目標，立刻輸出 `CHECKPOINT_SUMMARY:` 並結束，不要繼續探索或建立額外規則。
 - 遇到登入、付款、轉蛋、PVP 或不確定畫面就停止回報。
 """
@@ -318,6 +372,9 @@ def _format_job_result(result: dict) -> str:
     output = result.get("output") or ""
     head = f"[engine={engine}] {reason}".strip()
     if output:
+        if engine == "codex-segmented" and len(output) > 2800:
+            return (head + "\n\n...[前段分段輸出已省略]\n"
+                    + output[-2600:])[:3000]
         return (head + "\n\n" + output)[:3000]
     return head[:3000]
 
@@ -460,7 +517,9 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
               codex_model: str | None = None,
               codex_reasoning_effort: str | None = None,
               segment_mode: bool = False,
+              auto_segment: bool = False,
               segment_timeout: int | None = None,
+              segment_batch_size: int = DEFAULT_SEGMENT_BATCH_SIZE,
               print_only=False) -> dict:
     total_start = time.perf_counter()
     if agent_id:
@@ -566,9 +625,19 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     task_parts = split_numbered_task(task)
     performance["segments_detected"] = len(task_parts)
     performance["segmentation_requested"] = bool(segment_mode)
-    use_segments = segment_mode and len(task_parts) >= 2
+    performance["auto_segmentation_requested"] = bool(auto_segment)
+    use_segments = (
+        (segment_mode and len(task_parts) >= 2)
+        or (auto_segment and len(task_parts) >= AUTO_SEGMENT_MIN_STEPS)
+    )
+    segment_batches = batch_task_parts(task_parts, segment_batch_size) if use_segments else []
+    performance["segment_batch_size"] = segment_batch_size if use_segments else None
+    performance["segment_step_batches"] = [
+        {"start_step": b["start_step"], "end_step": b["end_step"]}
+        for b in segment_batches
+    ]
     performance["mode"] = "segmented" if use_segments else "single"
-    performance["segments_total"] = len(task_parts) if use_segments else 1
+    performance["segments_total"] = len(segment_batches) if use_segments else 1
     segment_timeout = int(segment_timeout or DEFAULT_SEGMENT_TIMEOUT_SECONDS)
     segment_timeout = max(60, min(int(timeout), segment_timeout))
     if not use_segments:
@@ -600,14 +669,18 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             attempts: list[dict] = []
             summaries: list[str] = []
             failed_reason = ""
-            for index, part in enumerate(task_parts, 1):
-                segment_task = _segment_task(task, part, index, len(task_parts), summaries)
+            for index, batch in enumerate(segment_batches, 1):
+                part = batch["task"]
+                segment_task = _segment_task(
+                    task, part, index, len(segment_batches), summaries)
                 segment_prompt = build_agent_prompt(
                     game, segment_task,
                     fast_context=fast_context,
                     visual_context=visual_context)
                 segment_info = {
                     "index": index,
+                    "start_step": batch["start_step"],
+                    "end_step": batch["end_step"],
                     "task": part[:500],
                     "prompt_chars": len(segment_prompt),
                     "timeout_seconds": segment_timeout,
@@ -619,7 +692,9 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
                         job_id,
                         progress={
                             "current_segment": index,
-                            "total_segments": len(task_parts),
+                            "total_segments": len(segment_batches),
+                            "start_step": batch["start_step"],
+                            "end_step": batch["end_step"],
                             "task": part,
                         },
                         performance=performance,
@@ -651,10 +726,12 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
                 if job_id:
                     store.update_job(job_id, performance=performance)
                 outputs.append(
-                    f"## Segment {index}/{len(task_parts)}: {part}\n\n{output}".strip())
+                    f"## Segment {index}/{len(segment_batches)} "
+                    f"(steps {batch['start_step']}-{batch['end_step']})\n\n"
+                    f"{part}\n\n{output}".strip())
                 if not segment_result.get("ok"):
                     failed_reason = (
-                        f"segment {index}/{len(task_parts)} failed: "
+                        f"segment {index}/{len(segment_batches)} failed: "
                         f"{segment_result.get('reason', '')}")
                     break
             ok = not failed_reason
@@ -664,7 +741,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
                 "output": "\n\n".join(outputs),
                 "attempts": attempts,
                 "reason": (
-                    f"completed {len(task_parts)} segments"
+                    f"completed {len(segment_batches)} segments"
                     if ok else failed_reason),
             }
         else:
@@ -762,11 +839,16 @@ def main(argv=None):
     ap.add_argument("--no-fast", action="store_true", help="停用 emulator 快速判斷層")
     ap.add_argument("--segment", action="store_true",
                     help="啟用條列任務分段；預設停用以避免多次 Codex 啟動拖慢操作")
+    ap.add_argument("--auto-segment", action="store_true",
+                    help="條列任務達到一定步數時自動分段")
     ap.add_argument("--no-segment", action="store_true",
                     help="相容舊參數：維持停用分段")
     ap.add_argument("--segment-timeout", type=int,
                     default=DEFAULT_SEGMENT_TIMEOUT_SECONDS,
                     help="每個分段最多等待秒數，預設 600")
+    ap.add_argument("--segment-batch-size", type=int,
+                    default=DEFAULT_SEGMENT_BATCH_SIZE,
+                    help="每段包含幾個編號步驟，預設 2，最多 4")
     ap.add_argument("--fast-steps", type=int, default=8, help="快速規則最多連續執行步數")
     ap.add_argument("--print-prompt", action="store_true", help="只組裝並印出 prompt，不執行")
     args = ap.parse_args(argv)
@@ -788,7 +870,9 @@ def main(argv=None):
                     codex_model=args.model,
                     codex_reasoning_effort=args.reasoning_effort,
                     segment_mode=args.segment and not args.no_segment,
+                    auto_segment=args.auto_segment and not args.no_segment,
                     segment_timeout=args.segment_timeout,
+                    segment_batch_size=args.segment_batch_size,
                     print_only=args.print_prompt)
 
     if args.print_prompt and res.get("ok"):

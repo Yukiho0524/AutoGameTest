@@ -118,12 +118,16 @@ def spawn_runner(script_name: str, job_id: str, engine: str = "codex",
         out = open(out_path, "w", encoding="utf-8")
         err = open(err_path, "w", encoding="utf-8")
         try:
+            args = [
+                sys.executable, runner, "--job", job_id, "--engine", engine,
+                "--timeout", str(timeout),
+                "--model", codex_settings["model"],
+                "--reasoning-effort", codex_settings["reasoning_effort"],
+            ]
+            if script_name == "run_agent.py":
+                args += ["--auto-segment", "--segment-batch-size", "2"]
             proc = subprocess.Popen(
-                [sys.executable, runner, "--job", job_id, "--engine", engine,
-                 "--timeout", str(timeout),
-                 "--model", codex_settings["model"],
-                 "--reasoning-effort", codex_settings["reasoning_effort"],
-                 "--no-segment"],
+                args,
                 cwd=ROOT, creationflags=_CREATE_NO_WINDOW,
                 stdout=out, stderr=err,
                 stdin=subprocess.DEVNULL,
