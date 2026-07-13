@@ -175,7 +175,7 @@ python tools/visual_memory.py context gget
 「腳本」把一段你親手示範的操作變成可重複執行的流程，**生成用 AI、執行不用**：
 
 1. **錄影**：在「模擬器操控」按 ⏺ 錄影，期間直接操作遊戲（在模擬器視窗用滑鼠、或在操控分頁點畫面都可以）。停止後除了 mp4，還會存下 `taps.json`——`getevent` 實測的每一次觸控（座標/時長/滑動），這是腳本正確性的來源。
-2. **生成（AI，job kind `genscript`）**：`tools/run_genscript.py` 用 cv2 從影片抽出每步觸控前的關鍵幀，並裁出點擊附近的按鈕模板到 `data/scripts/assets/`，再把 **taps.json 原始資料 + 關鍵幀 + 模板 + 腳本規格全部交給 Codex 完整計算**：步驟取捨（過場誤點轉成 wait）、等待秒數、具體命名、風險標記（登入/付費/轉蛋/PVP 加 ⚠）都由 Codex 決定。Python 只做**安全驗證**：座標必須出自 taps.json 實測值（AI 發明座標會被整份拒絕）、動作限白名單、等待上限。Codex 失敗或輸出未過驗證時，退回確定性骨架草稿儲存，錄影不會白費。
+2. **生成（AI，job kind `genscript`）**：`tools/run_genscript.py` 用 cv2 從影片抽出每步觸控前的關鍵幀，並裁出點擊附近的按鈕模板到 `data/scripts/assets/`，再把 **taps.json 原始資料 + 關鍵幀 + 模板 + 腳本規格全部交給 Codex 完整計算**：步驟取捨（過場誤點轉成 wait）、等待秒數、具體命名、風險標記（登入/付費/轉蛋/PVP 加 ⚠）都由 Codex 決定。Python 只做**安全驗證**：座標必須出自 taps.json 實測值（AI 發明座標會被整份拒絕）、動作限白名單、等待上限。Codex 失敗或輸出未過驗證時，若已成功裁出模板，會先退回含 `tap_image` 的圖片草稿；若沒有模板（例如缺 cv2/opencv 或影片讀取失敗），才退回純座標草稿，錄影不會白費。
 3. **執行（無 AI，job kind `run_script`）**：`tools/run_script.py` 用 ADB 重放。新版腳本可用 `tap_image` / `tap_scene` 透過模板比對點擊按鈕，並用 `anchor` / `scene` / `until` 驗證操作前後畫面；舊腳本仍支援正規化座標換算後 `tap/swipe/long_press`。每步截圖存 `data/artifacts/<job>/`，狀態回寫任務佇列。也可 CLI 直接跑：`python tools/run_script.py --script <id>`。
 
 腳本 YAML 範例：
@@ -210,7 +210,7 @@ defaults:
 
 適合固定不變的例行流程（每日簽到、領獎、掃蕩）；畫面會變動、需要判斷的任務仍交給 Agent（AI 代打）。腳本 YAML 可在腳本分頁直接查看/編輯（會做格式驗證）。
 
-注意：腳本生成需要 `opencv-python`（抽關鍵幀）與 `PyYAML`；缺 cv2 時仍可生成（AI 只依時間座標註解，品質較低），缺 PyYAML 則腳本功能停用。執行器只用標準庫。
+注意：腳本生成需要 `opencv-python`（抽關鍵幀與裁模板）與 `PyYAML`；缺 cv2 時仍可生成，但只會有座標草稿或低品質 AI 註解，不會有圖片預覽/模板。缺 PyYAML 則腳本功能停用。執行器只用標準庫。
 
 ## 週排程
 

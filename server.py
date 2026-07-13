@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import traceback
+import importlib.util
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -473,6 +474,14 @@ def _file_check(key: str, title: str, path: str, required: bool = False) -> dict
     return _check(level, key, title, path or "未設定", "確認安裝位置或寫入 config/local.json")
 
 
+def _python_package_check(key: str, title: str, module: str,
+                          required: bool, install_hint: str) -> dict:
+    if importlib.util.find_spec(module):
+        return _check("ok", key, title, "已安裝")
+    level = "fail" if required else "warn"
+    return _check(level, key, title, "未安裝", install_hint)
+
+
 def _data_writable_check() -> dict:
     data_dir = os.path.join(ROOT, "data")
     os.makedirs(data_dir, exist_ok=True)
@@ -569,6 +578,22 @@ def build_diagnostics() -> dict:
         "Python 版本",
         f"{version.major}.{version.minor}.{version.micro} ({sys.executable})",
         "" if version >= (3, 10) else "請安裝 Python 3.10 以上並加入 PATH",
+    ))
+    checks.append(_safe_check(
+        "pyyaml",
+        "PyYAML",
+        lambda: _python_package_check(
+            "pyyaml", "PyYAML", "yaml", True,
+            "請執行：pip install PyYAML；缺少時腳本 YAML 無法儲存",
+        ),
+    ))
+    checks.append(_safe_check(
+        "opencv",
+        "opencv-python / cv2",
+        lambda: _python_package_check(
+            "opencv", "opencv-python / cv2", "cv2", False,
+            "請執行：pip install opencv-python；缺少時錄影生成不會產生圖片模板",
+        ),
     ))
     checks.append(_safe_check("data_writable", "資料目錄可寫入", _data_writable_check))
     checks.append(_safe_check("port", f"控制台 Port {PORT}", _port_check))

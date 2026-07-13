@@ -844,6 +844,83 @@ def sanitize_generated(data: dict, taps: list[dict], meta: dict) -> tuple[dict, 
     return (script, "") if not err else ({}, err)
 
 
+def build_visual_fallback(source: str, taps: list[dict], templates: list[dict],
+                          name: str, meta: dict) -> dict:
+    """Build a draft script that still uses recorded image templates."""
+    script = scripts.build_skeleton(
+        source,
+        name=name,
+        package=meta.get("package", ""),
+        serial=meta.get("serial", ""),
+        emulator=meta.get("emulator", ""),
+        game_id=meta.get("game_id", ""),
+        game_name=meta.get("game_name", ""),
+    )
+    template_by_tap: dict[int, dict] = {}
+    for item in templates or []:
+        if not isinstance(item, dict) or not item.get("image"):
+            continue
+        try:
+            template_by_tap[int(item.get("tap_index"))] = item
+        except (TypeError, ValueError):
+            continue
+    if not template_by_tap:
+        return script
+
+    visual_count = 0
+    tap_index = 0
+    new_steps = []
+    for step in script.get("steps", []):
+        if step.get("action") == "launch_app":
+            new_steps.append(step)
+            continue
+        if tap_index >= len(taps):
+            new_steps.append(step)
+            continue
+        current_tap = taps[tap_index]
+        template = template_by_tap.get(tap_index)
+        tap_index += 1
+        if step.get("action") != "tap" or not template:
+            new_steps.append(step)
+            continue
+        next_step = {
+            "action": "tap_image",
+            "name": step.get("name") or f"tap {tap_index}",
+            "wait_after": step.get("wait_after", 0.2),
+            "image": template.get("image"),
+            "threshold": template.get(
+                "threshold", DEFAULT_SCRIPT_DEFAULTS["match_threshold"]),
+            "timeout": DEFAULT_SCRIPT_DEFAULTS["visual_timeout"],
+            "target_pos": template.get("target_pos", 5),
+            "record_pos": template.get("record_pos"),
+            "resolution": template.get("resolution"),
+            "rgb": bool(template.get("rgb", False)),
+            "allow_full_search": bool(template.get("allow_full_search", False)),
+        }
+        if current_tap.get("kind") not in ("", "tap", None):
+            next_step["name"] = f"{next_step['name']} ({current_tap.get('kind')})"
+        new_steps.append({k: v for k, v in next_step.items()
+                          if v not in (None, "", [])})
+        visual_count += 1
+
+    script["steps"] = new_steps
+    script["description"] = (
+        f"AI 註解失敗，已用錄影裁切模板建立圖片草稿；"
+        f"{visual_count} 個 tap 使用 tap_image，其餘保留座標/手勢。")
+    err = scripts.validate_script(script)
+    if err:
+        return scripts.build_skeleton(
+            source,
+            name=name,
+            package=meta.get("package", ""),
+            serial=meta.get("serial", ""),
+            emulator=meta.get("emulator", ""),
+            game_id=meta.get("game_id", ""),
+            game_name=meta.get("game_name", ""),
+        )
+    return script
+
+
 def generate(source: str, name: str = "", package: str = "",
              serial: str = "", emulator: str = "",
              game_id: str = "", game_name: str = "",
@@ -872,7 +949,7 @@ def generate(source: str, name: str = "", package: str = "",
             "game_name": game_name}
 
     frames: list[str] = []
-    templates: list[str] = []
+    templates: list[dict] = []
     if job_id:
         progress("從影片抽取每步觸控前的關鍵幀…")
         asset_dir = _asset_dir_for(source, job_id)
@@ -907,17 +984,19 @@ def generate(source: str, name: str = "", package: str = "",
     except Exception as e:   # AI failure must not lose the recording
         detail = f"Codex 生成失敗：{e}"
 
+    fallback_kind = ""
     if generated:
         if name:
             generated["name"] = name   # 使用者取的名字優先
         saved = scripts.save_script(generated)
         annotated = True
     else:
-        # fallback：確定性骨架草稿，錄影不白費
-        skeleton = scripts.build_skeleton(
-            source, name=name, package=package,
-            serial=meta["serial"], emulator=meta["emulator"],
-            game_id=game_id, game_name=game_name)
+        # fallback：優先使用已裁出的圖片模板；沒有模板才退回座標骨架。
+        skeleton = build_visual_fallback(source, taps, templates, name, meta)
+        fallback_kind = "圖片草稿" if any(
+            isinstance(step, dict)
+            and step.get("action") in ("tap_image", "tap_scene", "wait_scene")
+            for step in skeleton.get("steps", [])) else "座標草稿"
         saved = scripts.save_script(skeleton)
         annotated = False
 
@@ -927,9 +1006,10 @@ def generate(source: str, name: str = "", package: str = "",
         "script_name": saved.get("name", ""),
         "n_steps": len(saved.get("steps", [])),
         "annotated": annotated,
+        "fallback_kind": fallback_kind,
         "frames": len(frames),
         "templates": len(templates),
-        "detail": "" if annotated else f"以草稿骨架儲存（{detail or 'Codex 未產出'}）",
+        "detail": "" if annotated else f"以{fallback_kind or '草稿'}儲存（{detail or 'Codex 未產出'}）",
     })
 
 
@@ -937,9 +1017,11 @@ def _finish(job_id: str | None, result: dict) -> dict:
     if job_id:
         if result.get("ok"):
             note = f"，{result['detail']}" if result.get("detail") else ""
+            generated_text = "成功" if result.get("annotated") else (
+                f"失敗→{result.get('fallback_kind') or '草稿骨架'}")
             txt = (f"[engine=codex] 腳本已生成：「{result.get('script_name','')}」"
                    f"（{result.get('n_steps')} 步，Codex 生成 "
-                   f"{'成功' if result.get('annotated') else '失敗→草稿骨架'}{note}）"
+                   f"{generated_text}{note}）"
                    f" script_id={result.get('script_id')}")
         else:
             txt = f"[engine=codex] 生成失敗：{result.get('error','')}"

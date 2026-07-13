@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import importlib.util
 from shutil import which
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -81,6 +82,19 @@ def check_cli(label: str, path: str | None, executable_name: str) -> bool:
     return False
 
 
+def check_python_package(module: str, label: str, required: bool,
+                         install_hint: str) -> bool:
+    if importlib.util.find_spec(module):
+        ok(f"{label}: installed")
+        return True
+    msg = f"{label}: missing ({install_hint})"
+    if required:
+        fail(msg)
+        return False
+    warn(msg)
+    return True
+
+
 def main() -> int:
     print("AutoGameTest environment check")
     print(f"Project: {ROOT}")
@@ -92,6 +106,11 @@ def main() -> int:
     required_ok &= check_python()
     required_ok &= check_writable(os.path.join(ROOT, "data"))
     check_port()
+
+    print()
+    print("Python packages")
+    required_ok &= check_python_package("yaml", "PyYAML", True, "pip install PyYAML")
+    check_python_package("cv2", "opencv-python", False, "pip install opencv-python；缺少時腳本生成不會有圖片模板")
 
     print()
     print("Emulator tools")
