@@ -56,6 +56,7 @@ FRAME_PRE_TAP_OFFSETS = (0.10, 0.18, 0.30, 0.45, 0.70, 1.00, 1.50, 2.00, 3.00)
 FRAME_STABILITY_GAP = 0.12
 FRAME_STABLE_DELTA = 8.0
 FRAME_SCENE_CHANGE_DELTA = 12.0
+FRAME_SCENE_CORRECTION_MAX_OFFSET = 1.50
 
 
 def extract_keyframes(source: str, taps: list[dict], out_dir: str) -> list[str]:
@@ -207,7 +208,9 @@ def _pre_tap_frame(cv2, metas, tap_time: float):
 
     # If getevent is later than screenrecord, the nearest frames are already
     # after the tap. Find the latest scene change and use the older side.
-    for (_, _, newer), (_, _, older) in zip(samples, samples[1:]):
+    for (_, _, newer), (older_offset, _, older) in zip(samples, samples[1:]):
+        if older_offset > FRAME_SCENE_CORRECTION_MAX_OFFSET + 1e-6:
+            continue
         if _frame_delta(cv2, newer, older) >= FRAME_SCENE_CHANGE_DELTA:
             return older
 
