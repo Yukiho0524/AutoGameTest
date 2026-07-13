@@ -372,9 +372,10 @@ def build_skeleton(source_path: str, name: str = "",
     for i, tp in enumerate(taps):
         gap = 0.0 if prev_t is None else max(0.0, float(tp["t"]) - prev_t)
         prev_t = float(tp["t"])
-        if gap > 1.2 and steps:
+        if gap > 0 and steps:
             buffer = 2.0 if gap >= 8.0 else 0.0
-            steps[-1]["wait_after"] = round(min(gap + buffer, 90.0), 1)
+            wait = min(gap + buffer, 90.0)
+            steps[-1]["wait_after"] = round(wait, 2 if wait < 1.0 else 1)
         kind = tp.get("kind", "tap")
         if kind == "swipe":
             steps.append({
@@ -384,7 +385,7 @@ def build_skeleton(source_path: str, name: str = "",
                 "x2": tp.get("end_nx", tp["nx"]),
                 "y2": tp.get("end_ny", tp["ny"]),
                 "duration_ms": max(200, int(tp.get("duration_ms", 300))),
-                "wait_after": 1.0,
+                "wait_after": 0.2,
             })
         elif kind == "long_press":
             steps.append({
@@ -392,14 +393,14 @@ def build_skeleton(source_path: str, name: str = "",
                 "name": f"長壓 t={tp['t']:.1f}s",
                 "x": tp["nx"], "y": tp["ny"],
                 "duration_ms": max(400, int(tp.get("duration_ms", 500))),
-                "wait_after": 1.0,
+                "wait_after": 0.2,
             })
         else:
             steps.append({
                 "action": "tap",
                 "name": f"點擊 t={tp['t']:.1f}s",
                 "x": tp["nx"], "y": tp["ny"],
-                "wait_after": 1.0,
+                "wait_after": 0.2,
             })
     base = os.path.basename(source_path)
     return {

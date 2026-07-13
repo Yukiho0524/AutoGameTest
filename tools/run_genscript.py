@@ -52,7 +52,10 @@ MAX_MATCH_THRESHOLD = 0.80
 
 # Pick a frame before the recorded tap. Screenrecord/getevent clocks can drift,
 # so try nearest-before candidates first and fall back to older stable frames.
-FRAME_PRE_TAP_OFFSETS = (0.10, 0.18, 0.30, 0.45, 0.70, 1.00, 1.50, 2.00, 3.00)
+FRAME_PRE_TAP_OFFSETS = (
+    0.03, 0.05, 0.08, 0.10, 0.18, 0.30, 0.45,
+    0.70, 1.00, 1.50, 2.00, 3.00,
+)
 FRAME_STABILITY_GAP = 0.12
 FRAME_STABLE_DELTA = 8.0
 FRAME_SCENE_CHANGE_DELTA = 12.0
@@ -83,7 +86,8 @@ def extract_keyframes(source: str, taps: list[dict], out_dir: str) -> list[str]:
     os.makedirs(out_dir, exist_ok=True)
     saved = []
     for i, tp in enumerate(taps):
-        frame = _pre_tap_frame(cv2, metas, tp)
+        prev_time = _tap_time(taps[i - 1]) if i > 0 else None
+        frame = _pre_tap_frame(cv2, metas, tp, prev_time=prev_time)
         if frame is None:
             continue
         path = os.path.join(out_dir, f"tap{i:02d}.png")
@@ -225,10 +229,10 @@ def _frame_at(cv2, metas, t: float):
     return None
 
 
-def _pre_tap_frame(cv2, metas, tap: dict):
-    tap_time = float(tap.get("t", 0) or 0)
+def _pre_tap_frame(cv2, metas, tap: dict, prev_time: float | None = None):
+    tap_time = _tap_time(tap)
     samples = []
-    for offset in FRAME_PRE_TAP_OFFSETS:
+    for offset in _pre_tap_offsets(tap_time, prev_time):
         t = max(0.0, tap_time - offset)
         frame = _frame_at(cv2, metas, t)
         if frame is None:
@@ -259,6 +263,30 @@ def _pre_tap_frame(cv2, metas, tap: dict):
         if prev is None or _frame_delta(cv2, prev, frame) <= FRAME_STABLE_DELTA:
             return frame
     return samples[0][2]
+
+
+def _tap_time(tap: dict) -> float:
+    try:
+        return float(tap.get("t", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _pre_tap_offsets(tap_time: float,
+                     prev_time: float | None = None) -> list[float]:
+    offsets = list(FRAME_PRE_TAP_OFFSETS)
+    if prev_time is None:
+        return offsets
+    gap = max(0.0, tap_time - prev_time)
+    if gap <= 0:
+        return [0.03]
+    max_offset = gap - 0.03
+    if max_offset <= 0:
+        return [max(0.01, gap * 0.5)]
+    bounded = [off for off in offsets if off <= max_offset]
+    if bounded:
+        return bounded
+    return [max(0.01, min(0.03, gap * 0.5))]
 
 
 def _frame_delta(cv2, a, b) -> float:
@@ -382,7 +410,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 1. 依 taps 時間順序轉成 steps；kind 對應 action（tap/long_press/swipe）。
 2. 若該 tap 有「已裁切模板」，穩定按鈕/圖示/可重複 UI 優先產生 `tap_image`，image/record_pos/resolution/target_pos/threshold/rgb/allow_full_search 必須照抄上方 Template；只有模板不穩、看起來像背景/空白/廣告雜訊，或畫面過場時才使用 `tap`。
 3. 重要步驟請加 `until` 驗證下一個畫面；`until` 必須是下一畫面的穩定錨點，不要使用背景空白、動畫殘影或只在錄影中偶然出現的小雜訊。容易誤點的步驟請加 `anchor` 或 `scene` 驗證目前畫面；涉及遊戲啟動、下載、Loading、戰鬥結算或轉場，timeout/ until_timeout 請用 90~180 秒，不要太短。
-4. 兩次觸控的實際間隔反映成前一步的 `wait_after`（間隔近取 1~2 秒；有載入/轉場依畫面判斷加長，上限 90；不要把實測 30 秒以上的載入硬砍成 30）。
+4. 兩次觸控的實際間隔反映成前一步的 `wait_after`。若間隔小於 1 秒，請保留短間隔（約 0.05~0.9 秒）以支援連點、雙擊、快速確認，不要自動放大成 1~2 秒；只有有載入/轉場時才依畫面判斷加長，上限 90；不要把實測 30 秒以上的載入硬砍成 30。
 5. 看截圖判斷：若某次觸控落在過場/載入畫面（畫面模糊、無穩定按鈕），該點很可能是使用者在等待時的無意義點擊——改成 `wait` 或 `wait_scene` 步驟並在 name 註明，不要保留成 tap。
 6. 每步命名要具體（看圖說出點的是什麼按鈕/區域），不要只寫「點擊」。
 7. 若某步畫面涉及 登入/帳密/付費/購買/轉蛋/PVP 排位：保留該步但加 `risk: true` 與 `risk_reason`，name 前加「⚠ 」。
@@ -391,6 +419,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 10. 關鍵幀與模板代表「按下前」的畫面；若截圖看起來已經是按下後結果，優先把該 tap 視為時間軸偏移/無效點，不要用它當前一步的 `until` 或穩定模板。
 11. 若某一步是可選畫面、彈窗、活動入口、廣告、教學提示、或已可能被前一步處理掉，請加 `on_timeout: skip`；執行時該圖片 timeout 找不到會跳下一步繼續找下一張。關鍵流程、付費/抽取確認、不可跳過的主路徑不要加。
 12. 若小模板看不出完整樣貌，請打開同一列的 `context_image` 或該 tap 的觸控前畫面來理解語意；輸出的 YAML 仍使用 `image` 小模板路徑。
+13. 若連續 taps 的時間差很短且畫面沒有明顯轉場，視為快速連點/雙擊/連續確認；不要插入 `wait_scene` 或長 `until`，也不要把後一個 tap 的關鍵幀解讀成上一個 tap 前的畫面。
 
 # 輸出格式（最終回覆務必包含此區塊，區塊內只放 YAML）
 AUTOGAMETEST_SCRIPT_YAML:
