@@ -1,0 +1,15 @@
+{
+  "game_id": "game",
+  "updated_at": "2026-07-13 10:29:48",
+  "systems": {
+    "game-system-f7617ca912": {
+      "name": "game-system-f7617ca912",
+      "game_id": "game",
+      "system": "投資開發",
+      "source_doc": "C17.投資開發-1.0.2.0.xlsx",
+      "path": "data/system_skills/game/game-system-f7617ca912/SKILL.md",
+      "testcase_count": 127,
+      "updated_at": "2026-07-13 10:29:48"
+    }
+  }
+}
