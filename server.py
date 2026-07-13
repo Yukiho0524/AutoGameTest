@@ -209,6 +209,7 @@ def enqueue_agent_run(agent: dict, source: str = "manual",
         "prompt": agent.get("prompt", ""),
         "source": source,
         "notify_on_done": bool(agent.get("notify_on_done", True)),
+        "fast_visual_mode": bool(agent.get("fast_visual_mode", False)),
     }
     if schedule:
         payload["schedule_id"] = schedule.get("id")

@@ -42,9 +42,12 @@ import ai_runner  # noqa: E402
 DEFAULT_SEGMENT_TIMEOUT_SECONDS = 600
 AUTO_SEGMENT_MIN_STEPS = 5
 DEFAULT_SEGMENT_BATCH_SIZE = 2
+DEFAULT_VISUAL_MAX_TURNS = 12
+DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS = 180
 COMMON_MOBILE_CONTROLS_SKILL = ".codex/skills/mobile-game-controls/SKILL.md"
 _CREATE_NO_WINDOW = 0x08000000
 LOG_DIR = os.path.join(ROOT, "data", "logs")
+ARTIFACT_DIR = os.path.join(ROOT, "data", "artifacts")
 
 
 def _summarize_attempts(attempts: list[dict]) -> list[dict]:
@@ -558,6 +561,181 @@ def _read(path_rel: str) -> str:
     return ""
 
 
+def _clip_text(text: str, limit: int = 12000) -> str:
+    text = str(text or "")
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n\n...（內容過長，已截斷）"
+
+
+def _png_size(path: str) -> tuple[int, int] | None:
+    try:
+        with open(path, "rb") as f:
+            data = f.read(24)
+        if len(data) >= 24 and data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    except OSError:
+        return None
+    return None
+
+
+def _visual_artifact_dir(job_id: str | None) -> str:
+    run_id = job_id or datetime.now().strftime("manual_visual_%Y%m%d_%H%M%S")
+    path = os.path.join(ARTIFACT_DIR, str(run_id))
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _write_png(path: str, data: bytes) -> str:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
+def build_visual_turn_prompt(game: dict, task: str, screenshot_path: str,
+                             turn: int, max_turns: int,
+                             state_summary: str = "",
+                             extra_skill_context: str = "") -> str:
+    """Small stateless prompt for one screenshot decision."""
+    skill = _clip_text(_read(game.get("skill_path", "")), 14000)
+    extra_skill_context = _clip_text(extra_skill_context, 6000)
+    size = _png_size(screenshot_path)
+    size_text = f"{size[0]}x{size[1]}" if size else "unknown"
+    lc = game.get("launch", {})
+    package = lc.get("package", "")
+    extra_block = (
+        f"\n# QA 系統理解 Skill\n{extra_skill_context}\n"
+        if extra_skill_context else ""
+    )
+    return f"""你是 AutoGameTest 的「快速逐圖模式」判斷器。這是一個全新的短對話；不要依賴任何舊上下文，只使用本 prompt、遊戲 Skill 與這張截圖。
+
+# 遊戲
+{game.get('name', game.get('id', ''))}
+
+# 遊戲 Skill
+{skill or '（尚無 skill，請保守判斷）'}
+{extra_block}
+# 任務
+{task}
+
+# 目前輪次與狀態
+- turn: {turn}/{max_turns}
+- 上一輪摘要：{state_summary or '無，這是第一輪或剛交接。'}
+
+# 最新截圖
+- path: `{screenshot_path}`
+- size: {size_text}
+請直接檢視這張圖片後決定下一步。只允許回傳一個 JSON 決策，不要實際執行 ADB 指令。
+
+# 可用動作
+- `tap`: 需要 `x`, `y`，使用像素座標。
+- `swipe`: 需要 `x1`, `y1`, `x2`, `y2`, 可選 `duration_ms`。
+- `wait`: 需要 `seconds`，用於 loading/轉場。
+- `launch_app`: 重新啟動遊戲 package（目前 package: `{package}`）。
+- `done`: 任務完成。
+- `stop`: 遇到登入、付費、轉蛋、PVP、未知高風險或無法判斷。
+
+# 判斷規則
+- 每輪只做 1 個低風險動作；不要規劃多步連點。
+- 若畫面已達成任務，回 `done`。
+- 若正在 loading，優先 `wait` 2~8 秒。
+- 不確定時回 `stop`，不要猜測高風險操作。
+- 座標必須是目前截圖上的像素座標。
+
+# 回覆格式
+只回下列區塊，不要加其他文字：
+AUTOGAMETEST_VISUAL_STEP:
+```json
+{{
+  "status": "continue",
+  "action": "tap",
+  "x": 100,
+  "y": 200,
+  "reason": "為什麼這一步安全且符合任務",
+  "next_state": "執行後預期進入的簡短狀態"
+}}
+```
+
+若完成：
+```json
+{{"status":"done","reason":"完成證據","next_state":"done"}}
+```
+"""
+
+
+def extract_visual_step(text: str) -> dict | None:
+    raw = str(text or "")
+    marker = "AUTOGAMETEST_VISUAL_STEP"
+    candidates: list[str] = []
+    idx = raw.find(marker)
+    if idx >= 0:
+        candidates.append(raw[idx + len(marker):])
+    candidates.extend(re.findall(r"```(?:json)?\s*(\{.*?\})\s*```",
+                                 raw, flags=re.DOTALL | re.IGNORECASE))
+    obj_match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+    if obj_match:
+        candidates.append(obj_match.group(0))
+    for candidate in candidates:
+        text = str(candidate or "").strip(" \t\r\n:：`")
+        if text.startswith("json"):
+            text = text[4:].strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE).strip()
+            text = text.split("```", 1)[0].strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def _int_field(data: dict, key: str, default: int = 0) -> int:
+    try:
+        return int(round(float(data.get(key, default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def execute_visual_decision(decision: dict, serial: str, emulator: str,
+                            package: str) -> tuple[bool, str]:
+    status = str(decision.get("status", "continue") or "continue").lower()
+    action = str(decision.get("action", "") or "").lower()
+    if status == "done" or action == "done":
+        return True, "done"
+    if status == "stop" or action == "stop":
+        return False, "stop"
+    if action == "tap":
+        ok = adb.tap(serial, _int_field(decision, "x"), _int_field(decision, "y"), emulator)
+        time.sleep(0.7)
+        return ok, "tap"
+    if action == "swipe":
+        ok = adb.swipe(
+            serial,
+            _int_field(decision, "x1"),
+            _int_field(decision, "y1"),
+            _int_field(decision, "x2"),
+            _int_field(decision, "y2"),
+            max(100, min(5000, _int_field(decision, "duration_ms", 300))),
+            emulator,
+        )
+        time.sleep(0.7)
+        return ok, "swipe"
+    if action == "wait":
+        seconds = max(0.5, min(20.0, float(decision.get("seconds", 3) or 3)))
+        time.sleep(seconds)
+        return True, f"wait {seconds:.1f}s"
+    if action == "launch_app":
+        if not package:
+            return False, "launch_app missing package"
+        ok = adb.launch_app(serial, package, emulator)
+        time.sleep(5.0)
+        return ok, "launch_app"
+    return False, f"unsupported action: {action or '(empty)'}"
+
+
 def build_agent_prompt(game: dict, task: str, fast_context: str = "",
                        visual_context: str = "",
                        extra_skill_context: str = "") -> str:
@@ -648,6 +826,169 @@ AUTOGAMETEST_SKILL_LESSONS:
 """
 
 
+def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
+                         timeout: int, model: str, reasoning_effort: str,
+                         extra_skill_context: str = "",
+                         max_turns: int = DEFAULT_VISUAL_MAX_TURNS,
+                         turn_timeout: int = DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS) -> dict:
+    if game.get("control") != "emulator":
+        return {
+            "engine_used": "codex-fast-visual",
+            "ok": False,
+            "output": "",
+            "attempts": [],
+            "reason": "快速逐圖模式目前只支援 Android 模擬器 Agent",
+        }
+    lc = game.get("launch", {})
+    emulator = adb.normalize_emulator(lc.get("emulator", "ldplayer"))
+    serial = lc.get("serial") or adb.serial_for(lc.get("instance", 0), emulator)
+    package = lc.get("package", "")
+    artifact_dir = _visual_artifact_dir(job_id)
+    attempts: list[dict] = []
+    turns: list[dict] = []
+    outputs: list[str] = []
+    state_summary = ""
+    sandbox = "danger-full-access"
+    max_turns = max(1, min(30, int(max_turns or DEFAULT_VISUAL_MAX_TURNS)))
+    turn_timeout = max(60, min(int(timeout or turn_timeout), int(turn_timeout)))
+
+    if package:
+        adb.launch_app(serial, package, emulator)
+        time.sleep(5.0)
+
+    for turn in range(1, max_turns + 1):
+        started = time.perf_counter()
+        if job_id:
+            store.update_job(
+                job_id,
+                progress={
+                    "stage": "fast_visual",
+                    "message": f"快速逐圖模式第 {turn}/{max_turns} 輪截圖判斷",
+                    "turn": turn,
+                    "max_turns": max_turns,
+                },
+            )
+        png = adb.screenshot(serial, emulator)
+        if not png:
+            reason = "截圖失敗"
+            turns.append({"turn": turn, "status": "error", "reason": reason})
+            return {
+                "engine_used": "codex-fast-visual",
+                "ok": False,
+                "output": "\n".join(outputs),
+                "attempts": attempts,
+                "reason": reason,
+                "visual_turns": turns,
+                "artifact_dir": artifact_dir,
+            }
+        screenshot_path = _write_png(
+            os.path.join(artifact_dir, f"visual_{turn:03d}.png"), png)
+        prompt = build_visual_turn_prompt(
+            game, task, screenshot_path, turn, max_turns,
+            state_summary=state_summary,
+            extra_skill_context=extra_skill_context,
+        )
+        result = ai_runner.run_with_fallback(
+            prompt,
+            cwd=ROOT,
+            timeout=turn_timeout,
+            engine="codex",
+            fallback=False,
+            codex_sandbox=sandbox,
+            codex_model=model,
+            codex_reasoning_effort=reasoning_effort,
+        )
+        for attempt in result.get("attempts", []):
+            item = dict(attempt)
+            item["visual_turn"] = turn
+            attempts.append(item)
+        output = result.get("output", "")
+        decision = extract_visual_step(output)
+        elapsed = round(time.perf_counter() - started, 3)
+        if not result.get("ok") or not decision:
+            reason = result.get("reason") or "Codex 未回傳可解析的逐圖 JSON"
+            turns.append({
+                "turn": turn,
+                "status": "error",
+                "screenshot": screenshot_path,
+                "elapsed_seconds": elapsed,
+                "reason": reason,
+            })
+            outputs.append(
+                f"Turn {turn}: error - {reason}\n{screenshot_path}\n{output}".strip())
+            return {
+                "engine_used": "codex-fast-visual",
+                "ok": False,
+                "output": "\n\n".join(outputs),
+                "attempts": attempts,
+                "reason": reason,
+                "visual_turns": turns,
+                "artifact_dir": artifact_dir,
+            }
+        status = str(decision.get("status", "continue") or "continue").lower()
+        action = str(decision.get("action", "") or "").lower()
+        reason = str(decision.get("reason", "") or "").strip()
+        next_state = str(decision.get("next_state", "") or "").strip()
+        if status == "done" or action == "done":
+            turns.append({
+                "turn": turn,
+                "status": "done",
+                "action": "done",
+                "screenshot": screenshot_path,
+                "elapsed_seconds": elapsed,
+                "reason": reason,
+                "next_state": next_state,
+            })
+            outputs.append(f"Turn {turn}: done - {reason}")
+            return {
+                "engine_used": "codex-fast-visual",
+                "ok": True,
+                "output": "\n".join(outputs),
+                "attempts": attempts,
+                "reason": reason or "快速逐圖模式完成",
+                "visual_turns": turns,
+                "artifact_dir": artifact_dir,
+            }
+        ok, exec_detail = execute_visual_decision(decision, serial, emulator, package)
+        turn_info = {
+            "turn": turn,
+            "status": "done" if ok else "error",
+            "action": action,
+            "screenshot": screenshot_path,
+            "elapsed_seconds": elapsed,
+            "reason": reason,
+            "next_state": next_state,
+            "execute_detail": exec_detail,
+            "decision": decision,
+        }
+        turns.append(turn_info)
+        outputs.append(
+            f"Turn {turn}: {action or '(none)'} -> {exec_detail}; "
+            f"{reason}".strip())
+        if not ok:
+            return {
+                "engine_used": "codex-fast-visual",
+                "ok": False,
+                "output": "\n".join(outputs),
+                "attempts": attempts,
+                "reason": exec_detail,
+                "visual_turns": turns,
+                "artifact_dir": artifact_dir,
+            }
+        state_summary = (
+            f"上一輪執行 {action}，結果 {exec_detail}。"
+            f"原因：{reason[:120]}。下一狀態：{next_state[:120]}。")
+    return {
+        "engine_used": "codex-fast-visual",
+        "ok": False,
+        "output": "\n".join(outputs),
+        "attempts": attempts,
+        "reason": f"達到快速逐圖模式最大輪數 {max_turns}",
+        "visual_turns": turns,
+        "artifact_dir": artifact_dir,
+    }
+
+
 def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
               engine="codex", fallback=False, timeout=3600,
               fast_mode=True, fast_steps=8,
@@ -657,9 +998,13 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
               auto_segment: bool = False,
               segment_timeout: int | None = None,
               segment_batch_size: int = DEFAULT_SEGMENT_BATCH_SIZE,
+              fast_visual_mode: bool = False,
+              visual_max_turns: int = DEFAULT_VISUAL_MAX_TURNS,
+              visual_turn_timeout: int = DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS,
               extra_skill_path: str = "",
               print_only=False) -> dict:
     total_start = time.perf_counter()
+    agent = None
     if agent_id:
         agent = store.get_agent(agent_id)
         if not agent:
@@ -678,6 +1023,19 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     if job_id:
         current_job = store.get_job(job_id) or {}
         job_payload = current_job.get("payload") or {}
+    fast_visual_mode = bool(
+        fast_visual_mode
+        or (agent or {}).get("fast_visual_mode")
+        or job_payload.get("fast_visual_mode"))
+    try:
+        visual_max_turns = int(job_payload.get("visual_max_turns") or visual_max_turns)
+    except (TypeError, ValueError):
+        visual_max_turns = DEFAULT_VISUAL_MAX_TURNS
+    try:
+        visual_turn_timeout = int(
+            job_payload.get("visual_turn_timeout") or visual_turn_timeout)
+    except (TypeError, ValueError):
+        visual_turn_timeout = DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS
 
     codex_model, codex_reasoning_effort = _resolve_codex_settings(
         codex_model, codex_reasoning_effort)
@@ -804,141 +1162,196 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     if not use_segments:
         segment_timeout = timeout
     performance["segment_timeout_seconds"] = segment_timeout if use_segments else None
-    prompt = build_agent_prompt(
-        game, task, fast_context=fast_context, visual_context=visual_context,
-        extra_skill_context=extra_skill_context)
-    performance["prompt_chars"] = len(prompt)
-    if job_id:
-        store.update_job(
-            job_id,
-            progress={
-                "stage": "codex_handoff",
-                "message": "已完成本地檢查，Codex 判斷中",
-                "fast_handoff_reason": performance.get("fast_handoff_reason", ""),
-                "prompt_chars": performance["prompt_chars"],
-            },
-            performance=performance,
-        )
-    if print_only:
-        return {"ok": True, "prompt": prompt, "performance": performance}
 
-    # emulator agents need adb (network + external exe) -> full access sandbox
-    sandbox = "danger-full-access" if game.get("control") == "emulator" else "workspace-write"
+    if fast_visual_mode and not print_only:
+        performance["mode"] = "fast-visual"
+        performance["segments_total"] = visual_max_turns
+        performance["segment_timeout_seconds"] = visual_turn_timeout
+        performance["visual_max_turns"] = visual_max_turns
+        performance["visual_turn_timeout_seconds"] = visual_turn_timeout
+        if job_id:
+            store.update_job(
+                job_id,
+                progress={
+                    "stage": "fast_visual",
+                    "message": "快速逐圖模式啟動：每張截圖使用新的 Codex 對話",
+                    "fast_handoff_reason": performance.get("fast_handoff_reason", ""),
+                },
+                performance=performance,
+            )
+        try:
+            result = run_fast_visual_mode(
+                game,
+                task,
+                job_id=job_id,
+                timeout=timeout,
+                model=codex_model,
+                reasoning_effort=codex_reasoning_effort,
+                extra_skill_context=extra_skill_context,
+                max_turns=visual_max_turns,
+                turn_timeout=visual_turn_timeout,
+            )
+        except Exception as e:
+            result = {
+                "engine_used": "codex-fast-visual",
+                "ok": False,
+                "output": "",
+                "attempts": [],
+                "reason": f"fast visual crashed: {e}",
+                "traceback": traceback.format_exc(),
+            }
+        performance["codex_seconds"] = round(sum(
+            float(a.get("elapsed_seconds") or 0)
+            for a in result.get("attempts", [])
+        ), 3)
+        performance["segments_completed"] = len(result.get("visual_turns", []))
+        performance["visual_turns"] = result.get("visual_turns", [])
+        if result.get("artifact_dir"):
+            performance["artifact_dir"] = result["artifact_dir"]
+            try:
+                performance["artifact_png_count"] = len([
+                    name for name in os.listdir(result["artifact_dir"])
+                    if name.lower().endswith(".png")
+                ])
+            except OSError:
+                pass
+    else:
+        prompt = build_agent_prompt(
+            game, task, fast_context=fast_context, visual_context=visual_context,
+            extra_skill_context=extra_skill_context)
+        performance["prompt_chars"] = len(prompt)
+        if job_id:
+            store.update_job(
+                job_id,
+                progress={
+                    "stage": "codex_handoff",
+                    "message": "已完成本地檢查，Codex 判斷中",
+                    "fast_handoff_reason": performance.get("fast_handoff_reason", ""),
+                    "prompt_chars": performance["prompt_chars"],
+                },
+                performance=performance,
+            )
+        if print_only:
+            return {"ok": True, "prompt": prompt, "performance": performance}
 
-    try:
-        if use_segments:
-            outputs: list[str] = []
-            attempts: list[dict] = []
-            summaries: list[str] = []
-            failed_reason = ""
-            for index, batch in enumerate(segment_batches, 1):
-                part = batch["task"]
-                upcoming = segment_batches[index:index + 2]
-                next_preview = "\n".join(
-                    f"- steps {item['start_step']}-{item['end_step']}: "
-                    f"{' / '.join(str(item['task']).splitlines())[:180]}"
-                    for item in upcoming
-                )
-                segment_task = _segment_task(
-                    part, index, len(segment_batches), summaries, next_preview)
-                segment_prompt = build_agent_prompt(
-                    game, segment_task,
-                    fast_context=fast_context,
-                    visual_context=visual_context,
-                    extra_skill_context=extra_skill_context)
-                segment_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                segment_info = {
-                    "index": index,
-                    "start_step": batch["start_step"],
-                    "end_step": batch["end_step"],
-                    "task": part[:500],
-                    "prompt_chars": len(segment_prompt),
-                    "timeout_seconds": segment_timeout,
-                    "started_at": segment_started_at,
-                    "status": "running",
-                }
-                performance["segments"].append(segment_info)
-                if job_id:
-                    store.update_job(
-                        job_id,
-                        progress={
-                            "current_segment": index,
-                            "total_segments": len(segment_batches),
-                            "start_step": batch["start_step"],
-                            "end_step": batch["end_step"],
-                            "task": part,
-                            "segment_started_at": segment_started_at,
-                            "segment_timeout_seconds": segment_timeout,
-                        },
-                        performance=performance,
+        # emulator agents need adb (network + external exe) -> full access sandbox
+        sandbox = "danger-full-access" if game.get("control") == "emulator" else "workspace-write"
+
+        try:
+            if use_segments:
+                outputs: list[str] = []
+                attempts: list[dict] = []
+                summaries: list[str] = []
+                failed_reason = ""
+                for index, batch in enumerate(segment_batches, 1):
+                    part = batch["task"]
+                    upcoming = segment_batches[index:index + 2]
+                    next_preview = "\n".join(
+                        f"- steps {item['start_step']}-{item['end_step']}: "
+                        f"{' / '.join(str(item['task']).splitlines())[:180]}"
+                        for item in upcoming
                     )
-                segment_result = ai_runner.run_with_fallback(
-                    segment_prompt, cwd=ROOT, timeout=segment_timeout,
-                    engine=engine, fallback=fallback,
-                    codex_sandbox=sandbox,
+                    segment_task = _segment_task(
+                        part, index, len(segment_batches), summaries, next_preview)
+                    segment_prompt = build_agent_prompt(
+                        game, segment_task,
+                        fast_context=fast_context,
+                        visual_context=visual_context,
+                        extra_skill_context=extra_skill_context)
+                    segment_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    segment_info = {
+                        "index": index,
+                        "start_step": batch["start_step"],
+                        "end_step": batch["end_step"],
+                        "task": part[:500],
+                        "prompt_chars": len(segment_prompt),
+                        "timeout_seconds": segment_timeout,
+                        "started_at": segment_started_at,
+                        "status": "running",
+                    }
+                    performance["segments"].append(segment_info)
+                    if job_id:
+                        store.update_job(
+                            job_id,
+                            progress={
+                                "current_segment": index,
+                                "total_segments": len(segment_batches),
+                                "start_step": batch["start_step"],
+                                "end_step": batch["end_step"],
+                                "task": part,
+                                "segment_started_at": segment_started_at,
+                                "segment_timeout_seconds": segment_timeout,
+                            },
+                            performance=performance,
+                        )
+                    segment_result = ai_runner.run_with_fallback(
+                        segment_prompt, cwd=ROOT, timeout=segment_timeout,
+                        engine=engine, fallback=fallback,
+                        codex_sandbox=sandbox,
+                        codex_model=codex_model,
+                        codex_reasoning_effort=codex_reasoning_effort)
+                    segment_attempts = _merge_segment_attempts(segment_result, index)
+                    attempts.extend(segment_attempts)
+                    elapsed = sum(float(a.get("elapsed_seconds") or 0) for a in segment_attempts)
+                    output = segment_result.get("output", "")
+                    summary = _checkpoint_summary(output)
+                    if summary:
+                        summaries.append(summary)
+                    segment_info.update({
+                        "status": "done" if segment_result.get("ok") else "error",
+                        "ok": bool(segment_result.get("ok")),
+                        "elapsed_seconds": round(elapsed, 3),
+                        "output_chars": len(output),
+                        "reason": segment_result.get("reason", ""),
+                        "summary": summary,
+                    })
+                    performance["segments_completed"] = index if segment_result.get("ok") else index - 1
+                    performance["codex_seconds"] = round(
+                        sum(float(a.get("elapsed_seconds") or 0) for a in attempts), 3)
+                    if job_id:
+                        store.update_job(job_id, performance=performance)
+                    outputs.append(
+                        f"## Segment {index}/{len(segment_batches)} "
+                        f"(steps {batch['start_step']}-{batch['end_step']})\n\n"
+                        f"{part}\n\n{output}".strip())
+                    if not segment_result.get("ok"):
+                        failed_reason = (
+                            f"segment {index}/{len(segment_batches)} failed: "
+                            f"{segment_result.get('reason', '')}")
+                        break
+                ok = not failed_reason
+                result = {
+                    "engine_used": "codex-segmented",
+                    "ok": ok,
+                    "output": "\n\n".join(outputs),
+                    "attempts": attempts,
+                    "reason": (
+                        f"completed {len(segment_batches)} segments"
+                        if ok else failed_reason),
+                }
+            else:
+                result = ai_runner.run_with_fallback(
+                    prompt, cwd=ROOT, timeout=timeout, engine=engine,
+                    fallback=fallback, codex_sandbox=sandbox,
                     codex_model=codex_model,
                     codex_reasoning_effort=codex_reasoning_effort)
-                segment_attempts = _merge_segment_attempts(segment_result, index)
-                attempts.extend(segment_attempts)
-                elapsed = sum(float(a.get("elapsed_seconds") or 0) for a in segment_attempts)
-                output = segment_result.get("output", "")
-                summary = _checkpoint_summary(output)
-                if summary:
-                    summaries.append(summary)
-                segment_info.update({
-                    "status": "done" if segment_result.get("ok") else "error",
-                    "ok": bool(segment_result.get("ok")),
-                    "elapsed_seconds": round(elapsed, 3),
-                    "output_chars": len(output),
-                    "reason": segment_result.get("reason", ""),
-                    "summary": summary,
-                })
-                performance["segments_completed"] = index if segment_result.get("ok") else index - 1
-                performance["codex_seconds"] = round(
-                    sum(float(a.get("elapsed_seconds") or 0) for a in attempts), 3)
-                if job_id:
-                    store.update_job(job_id, performance=performance)
-                outputs.append(
-                    f"## Segment {index}/{len(segment_batches)} "
-                    f"(steps {batch['start_step']}-{batch['end_step']})\n\n"
-                    f"{part}\n\n{output}".strip())
-                if not segment_result.get("ok"):
-                    failed_reason = (
-                        f"segment {index}/{len(segment_batches)} failed: "
-                        f"{segment_result.get('reason', '')}")
-                    break
-            ok = not failed_reason
+                performance["segments_completed"] = 1 if result.get("ok") else 0
+                performance["codex_seconds"] = round(sum(
+                    float(a.get("elapsed_seconds") or 0)
+                    for a in result.get("attempts", [])
+                ), 3)
+        except Exception as e:
             result = {
-                "engine_used": "codex-segmented",
-                "ok": ok,
-                "output": "\n\n".join(outputs),
-                "attempts": attempts,
-                "reason": (
-                    f"completed {len(segment_batches)} segments"
-                    if ok else failed_reason),
+                "engine_used": "none",
+                "ok": False,
+                "output": "",
+                "reason": f"runner crashed: {e}",
+                "attempts": [],
+                "traceback": traceback.format_exc(),
             }
-        else:
-            result = ai_runner.run_with_fallback(
-                prompt, cwd=ROOT, timeout=timeout, engine=engine,
-                fallback=fallback, codex_sandbox=sandbox,
-                codex_model=codex_model,
-                codex_reasoning_effort=codex_reasoning_effort)
-            performance["segments_completed"] = 1 if result.get("ok") else 0
-            performance["codex_seconds"] = round(sum(
-                float(a.get("elapsed_seconds") or 0)
-                for a in result.get("attempts", [])
-            ), 3)
-    except Exception as e:
-        result = {
-            "engine_used": "none",
-            "ok": False,
-            "output": "",
-            "reason": f"runner crashed: {e}",
-            "attempts": [],
-            "traceback": traceback.format_exc(),
-        }
     performance["total_seconds"] = round(time.perf_counter() - total_start, 3)
-    performance["artifact_png_count"] = _count_artifact_pngs(fast_result)
+    if performance.get("mode") != "fast-visual":
+        performance["artifact_png_count"] = _count_artifact_pngs(fast_result)
     result["performance"] = performance
 
     learned_rules = fast_agent.extract_rule_block(result.get("output", ""))
@@ -1057,6 +1470,14 @@ def main(argv=None):
     ap.add_argument("--segment-batch-size", type=int,
                     default=DEFAULT_SEGMENT_BATCH_SIZE,
                     help="每段包含幾個編號步驟，預設 2，最多 4")
+    ap.add_argument("--fast-visual", action="store_true",
+                    help="啟用快速逐圖模式：每張截圖使用新的 Codex 最小對話")
+    ap.add_argument("--visual-max-turns", type=int,
+                    default=DEFAULT_VISUAL_MAX_TURNS,
+                    help="快速逐圖模式最多輪數，預設 12")
+    ap.add_argument("--visual-turn-timeout", type=int,
+                    default=DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS,
+                    help="快速逐圖模式每輪 Codex timeout 秒數，預設 180")
     ap.add_argument("--fast-steps", type=int, default=8, help="快速規則最多連續執行步數")
     ap.add_argument("--print-prompt", action="store_true", help="只組裝並印出 prompt，不執行")
     args = ap.parse_args(argv)
@@ -1076,6 +1497,18 @@ def main(argv=None):
             or p.get("system_skill_path")
             or ""
         )
+        if p.get("fast_visual_mode"):
+            args.fast_visual = True
+        if p.get("visual_max_turns"):
+            try:
+                args.visual_max_turns = int(p.get("visual_max_turns"))
+            except (TypeError, ValueError):
+                pass
+        if p.get("visual_turn_timeout"):
+            try:
+                args.visual_turn_timeout = int(p.get("visual_turn_timeout"))
+            except (TypeError, ValueError):
+                pass
 
     res = run_agent(agent_id=agent_id, game_id=game_id, task=task, job_id=args.job,
                     engine=args.engine, fallback=False,
@@ -1087,6 +1520,9 @@ def main(argv=None):
                     auto_segment=args.auto_segment and not args.no_segment,
                     segment_timeout=args.segment_timeout,
                     segment_batch_size=args.segment_batch_size,
+                    fast_visual_mode=args.fast_visual,
+                    visual_max_turns=args.visual_max_turns,
+                    visual_turn_timeout=args.visual_turn_timeout,
                     extra_skill_path=extra_skill_path,
                     print_only=args.print_prompt)
 
