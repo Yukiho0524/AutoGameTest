@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 
@@ -454,10 +455,37 @@ steps:
 
 def extract_script_yaml(text: str) -> dict | None:
     marker = "AUTOGAMETEST_SCRIPT_YAML"
-    idx = (text or "").find(marker)
-    if idx < 0 or yaml is None:
+    if yaml is None:
         return None
-    tail = text[idx + len(marker):].lstrip(" :\n\r\t")
+    raw_text = text or ""
+    candidates: list[tuple[str, bool]] = []
+
+    for match in re.finditer(re.escape(marker), raw_text, flags=re.IGNORECASE):
+        tail = raw_text[match.end():]
+        candidates.append((_strip_yaml_preamble(tail), True))
+
+    for block in _fenced_yaml_blocks(raw_text):
+        if marker.lower() in block.lower():
+            _, block = re.split(re.escape(marker), block, maxsplit=1,
+                                flags=re.IGNORECASE)
+            candidates.append((_strip_yaml_preamble(block), True))
+        else:
+            candidates.append((block, False))
+
+    raw_candidate = _raw_yaml_candidate(raw_text)
+    if raw_candidate:
+        candidates.append((raw_candidate, False))
+
+    for candidate, marker_backed in candidates:
+        data = _parse_script_yaml_candidate(candidate)
+        if isinstance(data, dict) and (
+                marker_backed or _looks_like_script_yaml(data)):
+            return data
+    return None
+
+
+def _strip_yaml_preamble(text: str) -> str:
+    tail = str(text or "").lstrip(" \t\r\n:：=-`")
     if tail.startswith("```"):
         first_nl = tail.find("\n")
         if first_nl >= 0:
@@ -465,11 +493,74 @@ def extract_script_yaml(text: str) -> dict | None:
         end = tail.find("```")
         if end >= 0:
             tail = tail[:end]
+    return tail.strip()
+
+
+def _fenced_yaml_blocks(text: str) -> list[str]:
+    blocks = []
+    pattern = re.compile(r"```(?:yaml|yml)?\s*\n(.*?)```",
+                         flags=re.IGNORECASE | re.DOTALL)
+    for match in pattern.finditer(text or ""):
+        block = match.group(1).strip()
+        if block:
+            blocks.append(block)
+    return blocks
+
+
+def _raw_yaml_candidate(text: str) -> str:
+    lines = str(text or "").splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if re.match(r"^\s*(name|description|defaults|steps)\s*:", line):
+            start = i
+            break
+    if start is None:
+        return ""
+    return "\n".join(lines[start:]).strip()
+
+
+def _parse_script_yaml_candidate(text: str) -> dict | None:
+    candidate = str(text or "").strip()
+    if not candidate:
+        return None
     try:
-        data = yaml.safe_load(tail.strip())
+        data = yaml.safe_load(candidate)
         return data if isinstance(data, dict) else None
     except yaml.YAMLError:
-        return None
+        pass
+    trimmed = _trim_yaml_to_script(candidate)
+    if trimmed and trimmed != candidate:
+        try:
+            data = yaml.safe_load(trimmed)
+            return data if isinstance(data, dict) else None
+        except yaml.YAMLError:
+            return None
+    return None
+
+
+def _trim_yaml_to_script(text: str) -> str:
+    lines = str(text or "").splitlines()
+    if not lines:
+        return ""
+    best = ""
+    for end in range(len(lines), 0, -1):
+        chunk = "\n".join(lines[:end]).strip()
+        if not chunk:
+            continue
+        try:
+            data = yaml.safe_load(chunk)
+        except yaml.YAMLError:
+            continue
+        if isinstance(data, dict) and _looks_like_script_yaml(data):
+            best = chunk
+            break
+    return best
+
+
+def _looks_like_script_yaml(data: dict) -> bool:
+    steps = data.get("steps")
+    return isinstance(steps, list) and any(isinstance(step, dict)
+                                           for step in steps)
 
 
 def _has_image_spec(data: dict) -> bool:
@@ -810,7 +901,7 @@ def generate(source: str, name: str = "", package: str = "",
                     detail = f"Codex 輸出未過安全驗證：{err}"
                     generated = None
             else:
-                detail = "Codex 回覆中沒有 AUTOGAMETEST_SCRIPT_YAML 區塊"
+                detail = "Codex 回覆中沒有可解析的 AUTOGAMETEST_SCRIPT_YAML/YAML 腳本"
         else:
             detail = result.get("reason", "Codex 執行失敗")
     except Exception as e:   # AI failure must not lose the recording
