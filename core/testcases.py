@@ -18,6 +18,7 @@ TESTCASE_DIR = ROOT / "TestCase"
 INPUT_DIR = TESTCASE_DIR / "_input"
 UPLOAD_DIR = INPUT_DIR / "uploads"
 SPEC_PATH = ROOT / "TESTCASE_SPEC.md"
+SKILLS_DIR = ROOT / ".codex" / "skills"
 SUPPORTED_EXTS = {".docx", ".pdf", ".xlsx", ".xlsm", ".txt", ".md"}
 VALID_TYPES = {"顯示確認", "操作確認", "數值確認"}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
@@ -160,11 +161,13 @@ def build_prompt(doc_name: str, doc_text: str, mode: str) -> str:
 - 企劃書沒寫清楚、PDF 無法讀到、圖示看不到的內容，一律列成 ISSUE。
 - 不要補充企劃書沒有的數值、流程、UI 或常識推測。
 - 每條 CASE 要可執行、可觀察、可判定。
+- 另外輸出 3 到 8 條 SKILL，描述該系統的用途、入口、核心流程、狀態、限制或風險；仍然只能根據企劃書文字。
 
 # 輸出格式
 只輸出以下純文字行，不要輸出 Markdown 表格或額外說明：
 
 SYSTEM: <系統名稱>
+SKILL: <給 Agent 的系統理解重點>
 CASE: <項目>|<類型>|<優先度>|<自動化>|<TC內容>
 ISSUE: <待釐清問題>
 """
@@ -172,6 +175,7 @@ ISSUE: <待釐清問題>
 
 def parse_output(output: str) -> dict[str, Any]:
     system = ""
+    skill_notes: list[str] = []
     cases: list[tuple[str, str, str, str, str]] = []
     issues: list[str] = []
     for line in str(output or "").splitlines():
@@ -180,6 +184,12 @@ def parse_output(output: str) -> dict[str, Any]:
         m = re.match(r"^SYSTEM:\s*(.+)$", text)
         if m:
             system = m.group(1).strip()
+            continue
+        m = re.match(r"^SKILL:\s*(.+)$", text)
+        if m:
+            note = m.group(1).strip()
+            if note:
+                skill_notes.append(note)
             continue
         m = re.match(r"^CASE:\s*(.+)$", text)
         if m:
@@ -199,12 +209,18 @@ def parse_output(output: str) -> dict[str, Any]:
         m = re.match(r"^ISSUE:\s*(.+)$", text)
         if m:
             issues.append(m.group(1).strip())
-    return {"system": system, "cases": cases, "issues": issues}
+    return {
+        "system": system,
+        "skill_notes": skill_notes,
+        "cases": cases,
+        "issues": issues,
+    }
 
 
 def write_testcase_xlsx(system: str, cases: list[tuple],
                         issues: list[str], doc_name: str,
-                        game: dict | None = None) -> Path:
+                        game: dict | None = None,
+                        system_skill: dict | None = None) -> Path:
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Font, PatternFill
@@ -268,6 +284,8 @@ def write_testcase_xlsx(system: str, cases: list[tuple],
     ws_agt.append(["game_name", (game or {}).get("name", "")])
     ws_agt.append(["source_doc", doc_name])
     ws_agt.append(["system", system or ""])
+    ws_agt.append(["system_skill_name", (system_skill or {}).get("name", "")])
+    ws_agt.append(["system_skill_path", (system_skill or {}).get("relative_path", "")])
     ws_agt.append(["generated_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
 
     try:
@@ -316,6 +334,8 @@ def list_testcases() -> list[dict[str, Any]]:
             "game_name": meta.get("game_name", ""),
             "source_doc": meta.get("source_doc", ""),
             "system": meta.get("system", ""),
+            "system_skill_name": meta.get("system_skill_name", ""),
+            "system_skill_path": meta.get("system_skill_path", ""),
         })
     return rows
 
@@ -389,11 +409,17 @@ def build_agent_task_from_testcase(name: str, game: dict,
     )
     scope = "未填 PASS/FAIL 的案例" if meta["used_pending"] else "全部案例"
     game_name = game.get("name") or game.get("id") or "指定遊戲"
+    system_skill_path = str(meta.get("system_skill_path", "") or "").strip()
+    system_skill_line = (
+        f"系統理解 Skill：{system_skill_path}（開始測試前先讀取，理解用途、入口、規則與風險）\n"
+        if system_skill_path else ""
+    )
     task = f"""請以 QA 測試員身份執行 TestCase 文件中的測項。
 
 TestCase 文件：{meta['name']}
 遊戲：{game_name}
 目標系統/功能：{meta['system']}
+{system_skill_line}來源企劃書：{meta.get('source_doc', '') or '未記錄'}
 本次範圍：{scope}，先測最多 {meta['selected_count']} / {meta['total']} 條。
 
 請先啟動或切回遊戲，導航到「{meta['system']}」相關介面，再逐條驗證下列 TestCase：
@@ -401,6 +427,7 @@ TestCase 文件：{meta['name']}
 
 執行規則：
 - 每條 TestCase 操作前後都要截圖判讀，不要盲點。
+- 若有系統理解 Skill，先用它理解該系統要做什麼、入口在哪、有哪些狀態與風險；TestCase 仍是 PASS/FAIL 判定來源。
 - 可以用遊戲 skill、圖片記憶與目前畫面判斷入口位置。
 - 登入、付費、消費、抽卡確認、第三方授權、PVP 排位都不可代操作；遇到就停止該案例並標 N/A 或 FAIL，說明原因。
 - 對每條案例輸出：RESULT: TC編號|PASS/FAIL/N/A|看到的證據或原因。
@@ -411,62 +438,130 @@ TestCase 文件：{meta['name']}
     return meta
 
 
-def update_game_skill_from_testcase(game_id: str | None, source_name: str,
-                                    system: str, cases: list[tuple],
-                                    issues: list[str]) -> dict[str, Any]:
+def _slugify_ascii(value: str, fallback: str = "skill") -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+    return slug or fallback
+
+
+def _yaml_quote(value: str) -> str:
+    text = str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{text}"'
+
+
+def _one_line(value: str, limit: int = 240) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:limit]
+
+
+def _system_skill_name(game_id: str, source_name: str, system: str) -> str:
+    game_slug = _slugify_ascii(game_id, "game")[:36].strip("-") or "game"
+    digest = hashlib.sha1(
+        f"{game_id}:{source_name}:{system}".encode("utf-8")
+    ).hexdigest()[:10]
+    return f"{game_slug}-system-{digest}"[:63].rstrip("-")
+
+
+def write_system_skill_from_testcase(
+    game: dict | None,
+    source_name: str,
+    system: str,
+    cases: list[tuple],
+    issues: list[str],
+    skill_notes: list[str] | None = None,
+) -> dict[str, Any]:
+    if not game:
+        return {"updated": False, "reason": "no game"}
+    game_id = str(game.get("id") or "").strip()
     if not game_id:
         return {"updated": False, "reason": "no game_id"}
-    from core import store
 
-    game = store.get_game(game_id)
-    if not game:
-        return {"updated": False, "reason": f"game not found: {game_id}"}
+    system_name = system or "未命名系統"
+    game_name = game.get("name") or game_id
+    skill_name = _system_skill_name(game_id, source_name, system_name)
+    skill_dir = SKILLS_DIR / skill_name
+    skill_path = skill_dir / "SKILL.md"
+    created = not skill_path.exists()
 
     counts: dict[str, int] = {}
     samples: list[str] = []
     for item, typ, priority, automation, tc in cases:
         key = item or "未分類"
         counts[key] = counts.get(key, 0) + 1
-        if len(samples) < 10:
+        if len(samples) < 12:
             samples.append(
-                f"- {key}｜{typ}｜{priority}/{automation}｜{tc[:160]}"
+                f"- {key}｜{typ}｜{priority}/{automation}｜{_one_line(tc, 180)}"
             )
-    count_lines = "\n".join(f"- {item}: {count} 條" for item, count in counts.items())
+
+    note_lines = "\n".join(
+        f"- {_one_line(note, 220)}"
+        for note in (skill_notes or [])[:10]
+        if _one_line(note)
+    )
+    if not note_lines:
+        note_lines = (
+            "- 以來源企劃書與 TestCase 為準理解此系統；未明確描述的入口、數值或流程不要自行推測。"
+        )
+    count_lines = "\n".join(
+        f"- {item}: {count} 條 TestCase" for item, count in counts.items()
+    ) or "- 無"
     sample_lines = "\n".join(samples) if samples else "- 無"
-    issue_lines = "\n".join(f"- {issue}" for issue in issues[:12]) if issues else "- 無"
-    marker = hashlib.sha1(source_name.encode("utf-8")).hexdigest()[:12]
-    start = f"<!-- AUTOGAMETEST_TESTCASE_SKILL:{marker} START -->"
-    end = f"<!-- AUTOGAMETEST_TESTCASE_SKILL:{marker} END -->"
-    block = f"""{start}
-## 企劃書 QA 知識：{source_name}
+    issue_lines = "\n".join(
+        f"- {_one_line(issue, 220)}" for issue in issues[:12]
+    ) if issues else "- 無"
 
-- 更新日期：{datetime.now():%Y-%m-%d}
-- 對應遊戲：{game.get("name", game_id)}
-- 目標系統/功能：{system or "未命名系統"}
-- 來源文件：{source_name}
+    description = (
+        f"Understand and test the {game_name} {system_name} system from "
+        f"planning document {source_name}. Use when running AutoGameTest QA "
+        "TestCase jobs, navigating this feature, or interpreting its intended "
+        "behavior, states, risks, and acceptance criteria."
+    )
+    body = f"""---
+name: {skill_name}
+description: {_yaml_quote(description)}
+---
 
-### TestCase 覆蓋項目
-{count_lines or "- 無"}
+# {game_name} / {system_name}
 
-### 可用於 Agent 測試的重點案例
+## System Intent
+
+{note_lines}
+
+## Source
+
+- Game: {game_name} (`{game_id}`)
+- Planning doc: {source_name}
+- Generated: {datetime.now():%Y-%m-%d}
+- TestCase count: {len(cases)}
+
+## Functional Areas
+
+{count_lines}
+
+## Agent Guidance
+
+- Read this skill before executing QA TestCase jobs for this system.
+- Use it to understand what the system is for, where to navigate, which states matter, and which risks should stop automation.
+- Treat the generated TestCase workbook as the source of truth for PASS/FAIL; this skill provides context, not permission to invent missing rules.
+- Stop and report if the test reaches login, account binding, payment, purchase confirmation, gacha confirmation, third-party authorization, PVP, or any unclear high-risk screen.
+
+## Representative TestCases
+
 {sample_lines}
 
-### 待釐清問題
+## Open Questions
+
 {issue_lines}
-{end}
 """
-    original = store.read_skill(game_id)
-    if start in original and end in original:
-        pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.S)
-        updated = pattern.sub(block.strip(), original)
-    else:
-        updated = (original.rstrip() + "\n\n" + block.strip() + "\n") if original.strip() else (block.strip() + "\n")
-    store.write_skill(game_id, updated)
-    skill_path = Path(game.get("skill_path", f".codex/skills/{game_id}/SKILL.md"))
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_path.write_text(body, encoding="utf-8")
     return {
         "updated": True,
+        "created": created,
         "game_id": game_id,
-        "path": str((ROOT / skill_path).resolve()),
+        "system": system_name,
+        "name": skill_name,
+        "path": str(skill_path.resolve()),
+        "relative_path": os.path.relpath(skill_path, ROOT).replace(os.sep, "/"),
     }
 
 
@@ -530,20 +625,23 @@ def generate_testcases(doc_path: str, run_ai, on_progress=None,
             "attempts": attempts,
             "log": str(log_path),
         }
+    system_name = parsed["system"] or doc.stem
+    system_skill = write_system_skill_from_testcase(
+        game,
+        source_name,
+        system_name,
+        parsed["cases"],
+        parsed["issues"],
+        parsed.get("skill_notes") or [],
+    ) if game else {"updated": False, "reason": "no game"}
     xlsx = write_testcase_xlsx(
-        parsed["system"] or doc.stem,
+        system_name,
         parsed["cases"],
         parsed["issues"],
         source_name,
         game=game,
+        system_skill=system_skill if system_skill.get("updated") else None,
     )
-    skill_update = update_game_skill_from_testcase(
-        (game or {}).get("id"),
-        source_name,
-        parsed["system"] or doc.stem,
-        parsed["cases"],
-        parsed["issues"],
-    ) if game else {"updated": False, "reason": "no game"}
     doc_backup = TESTCASE_DIR / source_name
     try:
         if doc.resolve() != doc_backup.resolve():
@@ -553,8 +651,8 @@ def generate_testcases(doc_path: str, run_ai, on_progress=None,
     git = ""
     if autopush:
         push_paths = [xlsx] + ([doc_backup] if doc_backup else [])
-        if skill_update.get("updated") and skill_update.get("path"):
-            push_paths.append(Path(skill_update["path"]))
+        if system_skill.get("updated") and system_skill.get("path"):
+            push_paths.append(Path(system_skill["path"]))
         git = autopush_files(
             push_paths,
             f"[Hibari] 新增 QA TestCase {xlsx.name}",
@@ -569,14 +667,15 @@ def generate_testcases(doc_path: str, run_ai, on_progress=None,
         "issues": len(parsed["issues"]),
         "mode": mode,
         "game_id": (game or {}).get("id", ""),
-        "skill_update": skill_update,
+        "system_skill": system_skill,
+        "skill_update": system_skill,
         "git": git,
         "attempts": attempts,
         "log": str(log_path),
         "message": (
             f"已生成 {len(parsed['cases'])} 條 TestCase"
             + (f"，{len(parsed['issues'])} 個待釐清問題" if parsed["issues"] else "")
-            + ("，已更新遊戲 Skill" if skill_update.get("updated") else "")
+            + ("，已建立/更新系統 Skill" if system_skill.get("updated") else "")
             + (f"；git：{git}" if git else "")
         ),
     }

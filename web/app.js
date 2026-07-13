@@ -1026,7 +1026,7 @@ function renderQA({ diagnostics, jobs, games, agents, scripts, testcases }) {
       "常用固定流程可錄影生成腳本，減少 AI 判斷時間。"),
     qaCheck(testcases.length > 0 ? "ok" : "info", "QA TestCase",
       testcases.length ? `已有 ${testcases.length} 份 TestCase 文件。` : "目前沒有 TestCase 文件。",
-      "先選遊戲再上傳企劃書，系統會生成 QA 用 xlsx 並更新該遊戲 Skill。"),
+      "先選遊戲再上傳企劃書，系統會生成 QA 用 xlsx 並建立該系統的理解 Skill。"),
   ];
   $("#qa-checklist").innerHTML = checklist.map(renderQACheck).join("");
   renderTestcaseList(testcases, games);
@@ -1076,6 +1076,9 @@ function renderTestcaseList(testcases, games = []) {
         <small>${tc.game_id
           ? `遊戲：${esc(tc.game_name || gameById.get(tc.game_id)?.name || tc.game_id)}`
           : "未綁定遊戲，請重新選遊戲生成"}</small>
+        ${tc.system_skill_path
+          ? `<small>系統 Skill：${esc(tc.system_skill_name || tc.system_skill_path)}</small>`
+          : ""}
       </div>
       <div class="qa-testcase-actions">
         <button type="button" class="small testcase-run" data-name="${esc(tc.name)}" data-game-id="${esc(tc.game_id || "")}" ${tc.game_id ? "" : "disabled"}>執行</button>
@@ -1136,7 +1139,7 @@ $("#testcase-form").onsubmit = async (e) => {
     $("#testcase-status").textContent = "請先選擇企劃書，或填入本機路徑。";
     return;
   }
-  $("#testcase-status").textContent = "建立 TestCase 生成任務中，完成後會同步更新遊戲 Skill...";
+  $("#testcase-status").textContent = "建立 TestCase 生成任務中，完成後會同步建立/更新系統理解 Skill...";
   const body = file
     ? { game_id: gameId, filename: file.name, content_base64: await fileToBase64(file) }
     : { game_id: gameId, doc_path: path };
@@ -1149,7 +1152,7 @@ $("#testcase-form").onsubmit = async (e) => {
     return;
   }
   $("#testcase-status").textContent = job.spawned
-    ? `已開始生成 TestCase 任務 #${job.id}，完成後會出現在下方清單並更新遊戲 Skill。`
+    ? `已開始生成 TestCase 任務 #${job.id}，完成後會出現在下方清單並更新系統理解 Skill。`
     : `已建立任務 #${job.id}，但背景執行器啟動失敗，請查看任務佇列。`;
   loadJobs();
   setTimeout(loadQA, 1200);

@@ -541,7 +541,8 @@ def _read(path_rel: str) -> str:
 
 
 def build_agent_prompt(game: dict, task: str, fast_context: str = "",
-                       visual_context: str = "") -> str:
+                       visual_context: str = "",
+                       extra_skill_context: str = "") -> str:
     """Compose a self-contained agent prompt any engine can execute."""
     persona = _read(game.get("agent_path", ""))
     skill = _read(game.get("skill_path", ""))
@@ -575,6 +576,10 @@ computer-use 應用名稱「{cu}」。
         f"# 共用手機操作詞彙（Skill）\n{common_skill}"
         if common_skill else ""
     )
+    extra_skill_block = (
+        f"# QA 系統理解 Skill\n{extra_skill_context}"
+        if extra_skill_context else ""
+    )
 
     return f"""你是一位遊戲玩家，代替使用者操作《{game.get('name','')}》完成指定任務。
 
@@ -583,6 +588,8 @@ computer-use 應用名稱「{cu}」。
 
 # 遊戲知識庫（Skill）
 {skill or '（尚無 skill，請先謹慎探索並記錄）'}
+
+{extra_skill_block}
 
 {common_skill_block}
 
@@ -632,6 +639,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
               auto_segment: bool = False,
               segment_timeout: int | None = None,
               segment_batch_size: int = DEFAULT_SEGMENT_BATCH_SIZE,
+              extra_skill_path: str = "",
               print_only=False) -> dict:
     total_start = time.perf_counter()
     if agent_id:
@@ -652,6 +660,10 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
         codex_model, codex_reasoning_effort)
     performance = _base_metrics(
         game, task, codex_model, codex_reasoning_effort)
+    extra_skill_context = _read(extra_skill_path) if extra_skill_path else ""
+    if extra_skill_context:
+        performance["extra_skill_path"] = extra_skill_path
+        performance["extra_skill_chars"] = len(extra_skill_context)
 
     if job_id:
         store.update_job(
@@ -770,7 +782,8 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
         segment_timeout = timeout
     performance["segment_timeout_seconds"] = segment_timeout if use_segments else None
     prompt = build_agent_prompt(
-        game, task, fast_context=fast_context, visual_context=visual_context)
+        game, task, fast_context=fast_context, visual_context=visual_context,
+        extra_skill_context=extra_skill_context)
     performance["prompt_chars"] = len(prompt)
     if job_id:
         store.update_job(
@@ -808,7 +821,8 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
                 segment_prompt = build_agent_prompt(
                     game, segment_task,
                     fast_context=fast_context,
-                    visual_context=visual_context)
+                    visual_context=visual_context,
+                    extra_skill_context=extra_skill_context)
                 segment_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 segment_info = {
                     "index": index,
@@ -1008,6 +1022,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     agent_id, game_id, task = args.agent, args.game, args.task
+    extra_skill_path = ""
     if args.job:
         job = store.get_job(args.job)
         if not job:
@@ -1016,6 +1031,11 @@ def main(argv=None):
         agent_id = agent_id or p.get("agent_id")
         game_id = game_id or p.get("game_id")
         task = task or p.get("prompt") or p.get("task")
+        extra_skill_path = (
+            p.get("testcase_system_skill_path")
+            or p.get("system_skill_path")
+            or ""
+        )
 
     res = run_agent(agent_id=agent_id, game_id=game_id, task=task, job_id=args.job,
                     engine=args.engine, fallback=False,
@@ -1027,6 +1047,7 @@ def main(argv=None):
                     auto_segment=args.auto_segment and not args.no_segment,
                     segment_timeout=args.segment_timeout,
                     segment_batch_size=args.segment_batch_size,
+                    extra_skill_path=extra_skill_path,
                     print_only=args.print_prompt)
 
     if args.print_prompt and res.get("ok"):
