@@ -59,6 +59,8 @@ FRAME_SCENE_CHANGE_DELTA = 12.0
 FRAME_SCENE_CORRECTION_MAX_OFFSET = 1.50
 FRAME_TAP_REGION_CHANGE_DELTA = 35.0
 FRAME_TAP_REGION_CORRECTION_MAX_OFFSET = 1.00
+CONTEXT_CROP_HALF_W_RATIO = 0.16
+CONTEXT_CROP_HALF_H_RATIO = 0.13
 
 
 def extract_keyframes(source: str, taps: list[dict], out_dir: str) -> list[str]:
@@ -100,6 +102,8 @@ def extract_touch_templates(frames: list[str], taps: list[dict],
     if not frames:
         return []
     os.makedirs(out_dir, exist_ok=True)
+    context_dir = os.path.join(os.path.dirname(out_dir), "contexts")
+    os.makedirs(context_dir, exist_ok=True)
     saved: list[dict] = []
     for frame_path in frames:
         idx = _tap_index_from_frame(frame_path)
@@ -119,18 +123,21 @@ def extract_touch_templates(frames: list[str], taps: list[dict],
             continue
         half_w = max(32, min(110, int(w * 0.06)))
         half_h = max(24, min(72, int(h * 0.055)))
-        x1, x2 = max(0, cx - half_w), min(w, cx + half_w)
-        y1, y2 = max(0, cy - half_h), min(h, cy + half_h)
+        x1, y1, x2, y2 = _crop_bounds(w, h, cx, cy, half_w, half_h)
         if x2 - x1 < 12 or y2 - y1 < 12:
             continue
         crop = frame[y1:y2, x1:x2]
         if not _template_is_distinctive(cv2, crop):
             continue
+        context_image = _write_context_crop(
+            cv2, frame, idx, cx, cy, context_dir)
         path = os.path.join(out_dir, f"tap{idx:02d}_template.png")
         if cv2.imwrite(path, crop):
             saved.append({
                 "tap_index": idx,
                 "image": _relative_path(path),
+                "context_image": context_image,
+                "template_size": [int(x2 - x1), int(y2 - y1)],
                 "record_pos": [
                     round(float(tap.get("nx", 0.5)) - 0.5, 4),
                     round(float(tap.get("ny", 0.5)) - 0.5, 4),
@@ -142,6 +149,27 @@ def extract_touch_templates(frames: list[str], taps: list[dict],
                 "allow_full_search": False,
             })
     return saved
+
+
+def _crop_bounds(width: int, height: int, cx: int, cy: int,
+                 half_w: int, half_h: int) -> tuple[int, int, int, int]:
+    x1, x2 = max(0, cx - half_w), min(width, cx + half_w)
+    y1, y2 = max(0, cy - half_h), min(height, cy + half_h)
+    return x1, y1, x2, y2
+
+
+def _write_context_crop(cv2, frame, idx: int, cx: int, cy: int,
+                        context_dir: str) -> str:
+    h, w = frame.shape[:2]
+    half_w = max(96, min(260, int(w * CONTEXT_CROP_HALF_W_RATIO)))
+    half_h = max(64, min(170, int(h * CONTEXT_CROP_HALF_H_RATIO)))
+    x1, y1, x2, y2 = _crop_bounds(w, h, cx, cy, half_w, half_h)
+    if x2 - x1 < 12 or y2 - y1 < 12:
+        return ""
+    path = os.path.join(context_dir, f"tap{idx:02d}_context.png")
+    if cv2.imwrite(path, frame[y1:y2, x1:x2]):
+        return _relative_path(path)
+    return ""
 
 
 def _tap_index_from_frame(path: str) -> int:
@@ -309,7 +337,9 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
         f"image={t.get('image')} record_pos={t.get('record_pos')} "
         f"resolution={t.get('resolution')} target_pos={t.get('target_pos')} "
         f"threshold={t.get('threshold')} rgb={t.get('rgb')} "
-        f"allow_full_search={t.get('allow_full_search')}"
+        f"allow_full_search={t.get('allow_full_search')} "
+        f"template_size={t.get('template_size')} "
+        f"context_image={t.get('context_image') or '無'}"
         for t in templates) or "（無模板圖可用，才使用座標重放）"
     return f"""你是遊戲自動化腳本產生器。使用者錄了一段親手示範的遊戲操作，以下是錄影期間 getevent 實測到的**每一次觸控原始資料**（taps.json）與每次觸控前的畫面截圖。請你**完整計算並產出可重放的腳本 YAML**。
 
@@ -323,6 +353,8 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 
 # 已裁切的按鈕/點擊模板（用於 tap_image / tap_scene）
 {template_lines}
+
+說明：`image` 是執行時用來比對的精準小模板；`context_image` 是較大的語意預覽圖，只用來看清完整按鈕/圖示與周圍 UI，不要把 `context_image` 填進 YAML 的 image/template。
 
 # 腳本 schema（你要輸出的格式）
 - 頂層欄位：`name`（腳本名）、`description`（這段流程在做什麼）、`defaults`（等待預設）、`steps`（動作序列）；系統會自動保存 `game_id/game_name/package/emulator/serial`
@@ -358,6 +390,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 9. 座標鐵則：所有 x/y/x1/y1/x2/y2 一律照抄 taps.json 的正規化值，禁止修改或發明座標。
 10. 關鍵幀與模板代表「按下前」的畫面；若截圖看起來已經是按下後結果，優先把該 tap 視為時間軸偏移/無效點，不要用它當前一步的 `until` 或穩定模板。
 11. 若某一步是可選畫面、彈窗、活動入口、廣告、教學提示、或已可能被前一步處理掉，請加 `on_timeout: skip`；執行時該圖片 timeout 找不到會跳下一步繼續找下一張。關鍵流程、付費/抽取確認、不可跳過的主路徑不要加。
+12. 若小模板看不出完整樣貌，請打開同一列的 `context_image` 或該 tap 的觸控前畫面來理解語意；輸出的 YAML 仍使用 `image` 小模板路徑。
 
 # 輸出格式（最終回覆務必包含此區塊，區塊內只放 YAML）
 AUTOGAMETEST_SCRIPT_YAML:
@@ -727,8 +760,9 @@ def generate(source: str, name: str = "", package: str = "",
             source, taps, os.path.join(asset_dir, "frames"))
         templates = extract_touch_templates(
             frames, taps, os.path.join(asset_dir, "templates"))
+    context_count = sum(1 for t in templates if t.get("context_image"))
     progress(f"共 {len(taps)} 次觸控、{len(frames)} 張關鍵幀、"
-             f"{len(templates)} 張模板，"
+             f"{len(templates)} 張模板、{context_count} 張語意圖，"
              "交給 Codex 完整生成腳本…")
 
     generated = None
