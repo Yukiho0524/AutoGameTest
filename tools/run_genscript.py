@@ -52,9 +52,10 @@ MAX_MATCH_THRESHOLD = 0.80
 
 # Pick a frame before the recorded tap. Screenrecord/getevent clocks can drift,
 # so try nearest-before candidates first and fall back to older stable frames.
-FRAME_PRE_TAP_OFFSETS = (0.10, 0.18, 0.30, 0.45, 0.70, 1.00)
+FRAME_PRE_TAP_OFFSETS = (0.10, 0.18, 0.30, 0.45, 0.70, 1.00, 1.50, 2.00, 3.00)
 FRAME_STABILITY_GAP = 0.12
 FRAME_STABLE_DELTA = 8.0
+FRAME_SCENE_CHANGE_DELTA = 12.0
 
 
 def extract_keyframes(source: str, taps: list[dict], out_dir: str) -> list[str]:
@@ -194,18 +195,27 @@ def _frame_at(cv2, metas, t: float):
 
 
 def _pre_tap_frame(cv2, metas, tap_time: float):
-    fallback = None
+    samples = []
     for offset in FRAME_PRE_TAP_OFFSETS:
         t = max(0.0, tap_time - offset)
         frame = _frame_at(cv2, metas, t)
         if frame is None:
             continue
-        if fallback is None:
-            fallback = frame
+        samples.append((offset, t, frame))
+    if not samples:
+        return None
+
+    # If getevent is later than screenrecord, the nearest frames are already
+    # after the tap. Find the latest scene change and use the older side.
+    for (_, _, newer), (_, _, older) in zip(samples, samples[1:]):
+        if _frame_delta(cv2, newer, older) >= FRAME_SCENE_CHANGE_DELTA:
+            return older
+
+    for _, t, frame in samples:
         prev = _frame_at(cv2, metas, max(0.0, t - FRAME_STABILITY_GAP))
         if prev is None or _frame_delta(cv2, prev, frame) <= FRAME_STABLE_DELTA:
             return frame
-    return fallback
+    return samples[0][2]
 
 
 def _frame_delta(cv2, a, b) -> float:
