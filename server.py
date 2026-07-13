@@ -885,6 +885,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(job)
         if p == "/api/testcases/generate":
             try:
+                game_id = str(b.get("game_id", "")).strip()
+                game = store.get_game(game_id) if game_id else None
+                if not game:
+                    return self._json({"ok": False, "error": "請先選擇企劃書對應的遊戲"})
                 if b.get("content_base64"):
                     filename = testcases.safe_name(str(b.get("filename", "planning.txt")))
                     doc_path = testcases.save_upload(
@@ -905,6 +909,8 @@ class Handler(BaseHTTPRequestHandler):
             job = store.enqueue_job("testgen", {
                 "doc_path": str(doc_path),
                 "filename": filename,
+                "game_id": game_id,
+                "game_name": game.get("name", ""),
                 "source": source,
             })
             job["spawned"] = spawn_runner("run_testgen.py", job["id"])
@@ -917,11 +923,16 @@ class Handler(BaseHTTPRequestHandler):
             testcase_name = os.path.basename(unquote(m.group(1)))
             game_id = str(b.get("game_id", "")).strip()
             agent_id = str(b.get("agent_id", "")).strip()
+            if not game_id:
+                try:
+                    game_id = testcases.read_testcase_cases(testcase_name, limit=1).get("game_id", "")
+                except Exception:
+                    game_id = ""
             if not game_id and agent_id:
                 agent = store.get_agent(agent_id)
                 game_id = agent.get("game_id", "") if agent else ""
             if not game_id:
-                return self._json({"ok": False, "error": "請先選擇遊戲"})
+                return self._json({"ok": False, "error": "這份 TestCase 未綁定遊戲，請重新選遊戲生成一次"})
             try:
                 limit = int(b.get("limit", 25) or 25)
             except (TypeError, ValueError):

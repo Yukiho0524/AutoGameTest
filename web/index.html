@@ -302,6 +302,11 @@
     <div class="qa-testgen card">
       <h3>企劃書 → QA TestCase</h3>
       <form id="testcase-form" class="qa-testcase-form">
+        <label>對應遊戲
+          <select id="testcase-game">
+            <option value="">請先選擇遊戲</option>
+          </select>
+        </label>
         <label>上傳企劃書
           <input id="testcase-file" type="file" accept=".docx,.pdf,.xlsx,.xlsm,.txt,.md">
         </label>
@@ -313,7 +318,7 @@
           <button type="button" id="testcase-list-refresh">重新整理清單</button>
         </div>
       </form>
-      <p class="hint" id="testcase-status">支援 docx / pdf / xlsx / txt / md。生成會進任務佇列，完成後輸出到 TestCase/。</p>
+      <p class="hint" id="testcase-status">支援 docx / pdf / xlsx / txt / md。生成會進任務佇列，完成後輸出到 TestCase/，並同步更新該遊戲 Skill。</p>
     </div>
     <div class="qa-testcase-strip">
       <div class="detail-head">

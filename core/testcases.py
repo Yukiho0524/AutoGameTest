@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import os
 import re
@@ -202,7 +203,8 @@ def parse_output(output: str) -> dict[str, Any]:
 
 
 def write_testcase_xlsx(system: str, cases: list[tuple],
-                        issues: list[str], doc_name: str) -> Path:
+                        issues: list[str], doc_name: str,
+                        game: dict | None = None) -> Path:
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Font, PatternFill
@@ -259,6 +261,15 @@ def write_testcase_xlsx(system: str, cases: list[tuple],
         ws_issue.append([f"{index}. {issue}"])
         ws_issue.cell(ws_issue.max_row, 1).alignment = wrap
 
+    ws_agt = wb.create_sheet("AutoGameTest")
+    ws_agt.sheet_state = "hidden"
+    ws_agt.append(["key", "value"])
+    ws_agt.append(["game_id", (game or {}).get("id", "")])
+    ws_agt.append(["game_name", (game or {}).get("name", "")])
+    ws_agt.append(["source_doc", doc_name])
+    ws_agt.append(["system", system or ""])
+    ws_agt.append(["generated_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+
     try:
         wb.save(out)
     except PermissionError:
@@ -267,17 +278,44 @@ def write_testcase_xlsx(system: str, cases: list[tuple],
     return out
 
 
+def _read_xlsx_metadata(path: Path) -> dict[str, str]:
+    try:
+        import openpyxl
+    except ImportError:
+        return {}
+    try:
+        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    except Exception:
+        return {}
+    try:
+        if "AutoGameTest" not in wb.sheetnames:
+            return {}
+        ws = wb["AutoGameTest"]
+        data = {}
+        for key, value, *_ in ws.iter_rows(min_row=2, values_only=True):
+            if key:
+                data[str(key)] = "" if value is None else str(value)
+        return data
+    finally:
+        wb.close()
+
+
 def list_testcases() -> list[dict[str, Any]]:
     if not TESTCASE_DIR.exists():
         return []
     rows = []
     for path in sorted(TESTCASE_DIR.glob("*_TestCase*.xlsx"),
                        key=lambda p: p.stat().st_mtime, reverse=True):
+        meta = _read_xlsx_metadata(path)
         rows.append({
             "name": path.name,
             "path": str(path),
             "size": path.stat().st_size,
             "mtime": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "game_id": meta.get("game_id", ""),
+            "game_name": meta.get("game_name", ""),
+            "source_doc": meta.get("source_doc", ""),
+            "system": meta.get("system", ""),
         })
     return rows
 
@@ -329,6 +367,7 @@ def read_testcase_cases(name: str, limit: int = 25) -> dict[str, Any]:
         "name": path.name,
         "path": str(path),
         "system": system,
+        **_read_xlsx_metadata(path),
         "total": len(cases),
         "pending": len(pending),
         "selected": selected,
@@ -372,6 +411,65 @@ TestCase 文件：{meta['name']}
     return meta
 
 
+def update_game_skill_from_testcase(game_id: str | None, source_name: str,
+                                    system: str, cases: list[tuple],
+                                    issues: list[str]) -> dict[str, Any]:
+    if not game_id:
+        return {"updated": False, "reason": "no game_id"}
+    from core import store
+
+    game = store.get_game(game_id)
+    if not game:
+        return {"updated": False, "reason": f"game not found: {game_id}"}
+
+    counts: dict[str, int] = {}
+    samples: list[str] = []
+    for item, typ, priority, automation, tc in cases:
+        key = item or "未分類"
+        counts[key] = counts.get(key, 0) + 1
+        if len(samples) < 10:
+            samples.append(
+                f"- {key}｜{typ}｜{priority}/{automation}｜{tc[:160]}"
+            )
+    count_lines = "\n".join(f"- {item}: {count} 條" for item, count in counts.items())
+    sample_lines = "\n".join(samples) if samples else "- 無"
+    issue_lines = "\n".join(f"- {issue}" for issue in issues[:12]) if issues else "- 無"
+    marker = hashlib.sha1(source_name.encode("utf-8")).hexdigest()[:12]
+    start = f"<!-- AUTOGAMETEST_TESTCASE_SKILL:{marker} START -->"
+    end = f"<!-- AUTOGAMETEST_TESTCASE_SKILL:{marker} END -->"
+    block = f"""{start}
+## 企劃書 QA 知識：{source_name}
+
+- 更新日期：{datetime.now():%Y-%m-%d}
+- 對應遊戲：{game.get("name", game_id)}
+- 目標系統/功能：{system or "未命名系統"}
+- 來源文件：{source_name}
+
+### TestCase 覆蓋項目
+{count_lines or "- 無"}
+
+### 可用於 Agent 測試的重點案例
+{sample_lines}
+
+### 待釐清問題
+{issue_lines}
+{end}
+"""
+    original = store.read_skill(game_id)
+    if start in original and end in original:
+        pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.S)
+        updated = pattern.sub(block.strip(), original)
+    else:
+        updated = (original.rstrip() + "\n\n" + block.strip() + "\n") if original.strip() else (block.strip() + "\n")
+    store.write_skill(game_id, updated)
+    skill_path = Path(game.get("skill_path", f".codex/skills/{game_id}/SKILL.md"))
+    return {
+        "updated": True,
+        "game_id": game_id,
+        "path": str((ROOT / skill_path).resolve()),
+    }
+
+
 def autopush_files(paths: list[Path], message: str) -> str:
     files = [os.path.relpath(p, ROOT) for p in paths if p and p.exists()]
     if not files:
@@ -401,6 +499,7 @@ def autopush_files(paths: list[Path], message: str) -> str:
 
 def generate_testcases(doc_path: str, run_ai, on_progress=None,
                        doc_name: str | None = None,
+                       game: dict | None = None,
                        autopush: bool = True) -> dict[str, Any]:
     doc = Path(doc_path)
     if not doc.exists():
@@ -436,7 +535,15 @@ def generate_testcases(doc_path: str, run_ai, on_progress=None,
         parsed["cases"],
         parsed["issues"],
         source_name,
+        game=game,
     )
+    skill_update = update_game_skill_from_testcase(
+        (game or {}).get("id"),
+        source_name,
+        parsed["system"] or doc.stem,
+        parsed["cases"],
+        parsed["issues"],
+    ) if game else {"updated": False, "reason": "no game"}
     doc_backup = TESTCASE_DIR / source_name
     try:
         if doc.resolve() != doc_backup.resolve():
@@ -446,6 +553,8 @@ def generate_testcases(doc_path: str, run_ai, on_progress=None,
     git = ""
     if autopush:
         push_paths = [xlsx] + ([doc_backup] if doc_backup else [])
+        if skill_update.get("updated") and skill_update.get("path"):
+            push_paths.append(Path(skill_update["path"]))
         git = autopush_files(
             push_paths,
             f"[Hibari] 新增 QA TestCase {xlsx.name}",
@@ -459,12 +568,15 @@ def generate_testcases(doc_path: str, run_ai, on_progress=None,
         "cases": len(parsed["cases"]),
         "issues": len(parsed["issues"]),
         "mode": mode,
+        "game_id": (game or {}).get("id", ""),
+        "skill_update": skill_update,
         "git": git,
         "attempts": attempts,
         "log": str(log_path),
         "message": (
             f"已生成 {len(parsed['cases'])} 條 TestCase"
             + (f"，{len(parsed['issues'])} 個待釐清問題" if parsed["issues"] else "")
+            + ("，已更新遊戲 Skill" if skill_update.get("updated") else "")
             + (f"；git：{git}" if git else "")
         ),
     }

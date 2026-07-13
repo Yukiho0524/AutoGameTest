@@ -28,6 +28,7 @@ def _settings() -> tuple[int, str, str]:
 
 def run(doc_path: str, job_id: str | None = None,
         doc_name: str | None = None,
+        game_id: str | None = None,
         timeout: int | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None) -> dict:
@@ -55,11 +56,13 @@ def run(doc_path: str, job_id: str | None = None,
             codex_reasoning_effort=reasoning_effort,
         )
 
+    game = store.get_game(game_id) if game_id else None
     result = testcases.generate_testcases(
         doc_path,
         run_ai=run_ai,
         on_progress=progress,
         doc_name=doc_name,
+        game=game,
         autopush=True,
     )
     result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
@@ -81,6 +84,7 @@ def main(argv=None) -> int:
     job_id = args.job.strip()
     doc_path = args.doc
     doc_name = None
+    game_id = None
     if job_id:
         job = store.get_job(job_id)
         if not job:
@@ -89,6 +93,7 @@ def main(argv=None) -> int:
         payload = job.get("payload") or {}
         doc_path = payload.get("doc_path")
         doc_name = payload.get("filename")
+        game_id = payload.get("game_id")
         store.update_job(job_id, status="running")
     if not doc_path:
         print("缺少企劃書路徑", file=sys.stderr)
@@ -99,6 +104,7 @@ def main(argv=None) -> int:
             str(doc_path),
             job_id=job_id or None,
             doc_name=doc_name,
+            game_id=game_id,
             timeout=args.timeout,
             model=args.model,
             reasoning_effort=args.reasoning_effort,
