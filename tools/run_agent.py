@@ -36,7 +36,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from core import store, adb, fast_agent, visual_memory  # noqa: E402
+from core import store, adb, fast_agent, visual_memory, testcases  # noqa: E402
 import ai_runner  # noqa: E402
 
 DEFAULT_SEGMENT_TIMEOUT_SECONDS = 600
@@ -474,12 +474,30 @@ def _format_job_result(result: dict) -> str:
     reason = result.get("reason") or ""
     output = result.get("output") or ""
     head = f"[engine={engine}] {reason}".strip()
+    writeback = result.get("testcase_writeback")
+    writeback_text = ""
+    if isinstance(writeback, dict):
+        if writeback.get("ok"):
+            writeback_text = (
+                "\n\n[Excel 回寫] "
+                f"{writeback.get('message') or '已嘗試回寫。'}"
+            )
+        else:
+            writeback_text = (
+                "\n\n[Excel 回寫失敗] "
+                f"{writeback.get('error') or writeback.get('message') or '未知錯誤'}"
+            )
     if output:
         if engine == "codex-segmented" and len(output) > 2800:
-            return (head + "\n\n...[前段分段輸出已省略]\n"
-                    + output[-2600:])[:3000]
-        return (head + "\n\n" + output)[:3000]
-    return head[:3000]
+            body_limit = max(800, 3000 - len(head) - len(writeback_text) - 22)
+            return (
+                head + "\n\n...[前段分段輸出已省略]\n"
+                + output[-body_limit:] + writeback_text
+            )[:3000]
+        body_limit = max(800, 3000 - len(head) - len(writeback_text) - 4)
+        body = output if len(output) <= body_limit else output[:body_limit] + "\n...[輸出已截斷]"
+        return (head + "\n\n" + body + writeback_text)[:3000]
+    return (head + writeback_text)[:3000]
 
 
 def _extract_marked_json(text: str, marker: str):
@@ -655,6 +673,11 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
         return {"ok": False, "error": f"遊戲不存在: {game_id}"}
     if not task:
         return {"ok": False, "error": "缺少任務內容"}
+
+    job_payload = {}
+    if job_id:
+        current_job = store.get_job(job_id) or {}
+        job_payload = current_job.get("payload") or {}
 
     codex_model, codex_reasoning_effort = _resolve_codex_settings(
         codex_model, codex_reasoning_effort)
@@ -948,6 +971,22 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     performance["analysis"] = performance_analysis
     result["performance_analysis"] = performance_analysis
 
+    testcase_writeback = None
+    if job_id and job_payload.get("source") == "testcase":
+        testcase_name = job_payload.get("testcase_name", "")
+        try:
+            testcase_writeback = testcases.write_testcase_results_from_output(
+                testcase_name, result.get("output", ""))
+        except Exception as e:
+            testcase_writeback = {
+                "ok": False,
+                "updated": 0,
+                "parsed": 0,
+                "missing": [],
+                "error": str(e),
+            }
+        result["testcase_writeback"] = testcase_writeback
+
     if job_id:
         store.update_job(
             job_id,
@@ -960,6 +999,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             fast_rules_from_visual_memory=visual_fast_rules_merge,
             visual_memory=visual_memory_merge,
             skill_lessons=skill_lessons_update,
+            testcase_writeback=testcase_writeback,
             performance=performance,
             performance_analysis=performance_analysis,
             progress=None,

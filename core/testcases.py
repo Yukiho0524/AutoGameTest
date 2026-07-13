@@ -655,7 +655,24 @@ def delete_testcase(name: str) -> dict[str, Any]:
     }
 
 
-def read_testcase_cases(name: str, limit: int = 25) -> dict[str, Any]:
+def _normalize_case_limit(limit: Any, default: int = 25) -> int | None:
+    text = str(limit if limit is not None else "").strip().lower()
+    if text in {"all", "全部"}:
+        return None
+    try:
+        value = int(limit)
+    except (TypeError, ValueError):
+        value = default
+    if value <= 0:
+        return None
+    return max(1, min(value, 80))
+
+
+def _slice_cases(cases: list[dict[str, Any]], limit: int | None) -> list[dict[str, Any]]:
+    return list(cases) if limit is None else list(cases[:limit])
+
+
+def read_testcase_cases(name: str, limit: int | str | None = 25) -> dict[str, Any]:
     try:
         import openpyxl
     except ImportError as e:
@@ -664,7 +681,7 @@ def read_testcase_cases(name: str, limit: int = 25) -> dict[str, Any]:
     path = testcase_path(name)
     if not path:
         raise FileNotFoundError(f"找不到 TestCase 文件：{name}")
-    limit = max(1, min(int(limit or 25), 80))
+    normalized_limit = _normalize_case_limit(limit)
     metadata = _read_xlsx_metadata(path)
     testcase_kind = metadata.get("testcase_kind", "standard") or "standard"
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
@@ -711,10 +728,10 @@ def read_testcase_cases(name: str, limit: int = 25) -> dict[str, Any]:
     if testcase_kind == "destructive":
         safe_cases = [case for case in cases if case.get("risk") == "SAFE"]
         pending = [case for case in safe_cases if not case.get("result")]
-        selected = (pending or safe_cases)[:limit]
+        selected = _slice_cases(pending or safe_cases, normalized_limit)
     else:
         pending = [case for case in cases if not case.get("result")]
-        selected = (pending or cases)[:limit]
+        selected = _slice_cases(pending or cases, normalized_limit)
     return {
         "name": path.name,
         "path": str(path),
@@ -726,13 +743,111 @@ def read_testcase_cases(name: str, limit: int = 25) -> dict[str, Any]:
         "safe_total": len([case for case in cases if case.get("risk") == "SAFE"]),
         "selected": selected,
         "selected_count": len(selected),
-        "limit": limit,
+        "limit": "all" if normalized_limit is None else normalized_limit,
         "used_pending": bool(pending),
     }
 
 
+def parse_testcase_result_lines(output: str) -> list[dict[str, Any]]:
+    results: dict[int, dict[str, Any]] = {}
+    pattern = re.compile(
+        r"RESULT\s*[:：]\s*TC\s*0*(\d+)\s*[|｜]\s*"
+        r"(PASS|FAIL|N/A|NA)\s*(?:[|｜]\s*(.*))?",
+        re.IGNORECASE,
+    )
+    for line in str(output or "").splitlines():
+        match = pattern.search(line)
+        if not match:
+            continue
+        no = int(match.group(1))
+        status = match.group(2).upper().replace("NA", "N/A")
+        evidence = (match.group(3) or "").strip()
+        results[no] = {
+            "no": no,
+            "status": status,
+            "evidence": evidence[:1000],
+            "raw": line.strip()[:1200],
+        }
+    return [results[key] for key in sorted(results)]
+
+
+def write_testcase_results_from_output(name: str, output: str) -> dict[str, Any]:
+    parsed = parse_testcase_result_lines(output)
+    if not parsed:
+        return {
+            "ok": True,
+            "updated": 0,
+            "parsed": 0,
+            "missing": [],
+            "message": "未找到 RESULT 行，略過 Excel 回寫。",
+        }
+    try:
+        import openpyxl
+    except ImportError as e:
+        raise RuntimeError("缺少 openpyxl，無法回寫 TestCase xlsx") from e
+
+    path = testcase_path(name)
+    if not path:
+        raise FileNotFoundError(f"找不到 TestCase 文件：{name}")
+
+    metadata = _read_xlsx_metadata(path)
+    testcase_kind = metadata.get("testcase_kind", "standard") or "standard"
+    wb = openpyxl.load_workbook(path)
+    try:
+        ws = wb[wb.sheetnames[0]]
+        if testcase_kind == "destructive":
+            tc_col, result_col, note_col = 4, 5, 7
+        else:
+            tc_col, result_col, note_col = 3, 4, 6
+        row_by_no: dict[int, int] = {}
+        case_no = 0
+        for row_index in range(2, ws.max_row + 1):
+            tc_text = str(ws.cell(row_index, tc_col).value or "").strip()
+            if not tc_text:
+                continue
+            case_no += 1
+            row_by_no[case_no] = row_index
+
+        updated = 0
+        missing: list[int] = []
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        for item in parsed:
+            row_index = row_by_no.get(int(item["no"]))
+            if not row_index:
+                missing.append(int(item["no"]))
+                continue
+            ws.cell(row_index, result_col).value = item["status"]
+            evidence = item.get("evidence") or item.get("raw") or ""
+            if evidence:
+                note_cell = ws.cell(row_index, note_col)
+                old_note = str(note_cell.value or "").strip()
+                new_note = f"[{stamp} Agent] {evidence}"
+                note_cell.value = f"{old_note}\n{new_note}" if old_note else new_note
+            updated += 1
+        wb.save(path)
+    except PermissionError as e:
+        return {
+            "ok": False,
+            "updated": 0,
+            "parsed": len(parsed),
+            "missing": [],
+            "path": str(path),
+            "error": f"Excel 檔可能正在開啟，無法回寫：{e}",
+        }
+    finally:
+        wb.close()
+    return {
+        "ok": True,
+        "updated": updated,
+        "parsed": len(parsed),
+        "missing": missing,
+        "path": str(path),
+        "message": f"已回寫 {updated}/{len(parsed)} 條 TestCase 結果。",
+    }
+
+
 def build_agent_task_from_testcase(name: str, game: dict,
-                                   limit: int = 25) -> dict[str, Any]:
+                                   limit: int | str | None = 25) -> dict[str, Any]:
     meta = read_testcase_cases(name, limit=limit)
     if not meta["selected"]:
         if meta.get("testcase_kind") == "destructive":
@@ -781,8 +896,7 @@ TestCase 文件：{meta['name']}
 - 若有系統理解 Skill，先用它理解該系統要做什麼、入口在哪、有哪些狀態與風險；TestCase 仍是 PASS/FAIL 判定來源。
 - 可以用遊戲 skill、圖片記憶與目前畫面判斷入口位置。
 - 登入、付費、消費、抽卡確認、第三方授權、PVP 排位都不可代操作；遇到就停止該案例並標 N/A 或 FAIL，說明原因。
-- 對每條案例輸出：RESULT: TC編號|PASS/FAIL/N/A|看到的證據或原因。
-- 本版先把結果寫在任務詳情與 log，不回寫 Excel。
+- 對每條案例輸出：RESULT: TC編號|PASS/FAIL/N/A|看到的證據或原因；系統會用這個格式回寫 Excel。
 - 所有列出的案例都有 RESULT 後，輸出 SUITE DONE 並結束任務。
 """
     meta["task"] = task

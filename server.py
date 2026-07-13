@@ -225,8 +225,21 @@ def enqueue_agent_run(agent: dict, source: str = "manual",
     return job
 
 
+def _parse_testcase_limit(value) -> int | str:
+    text = str(value if value is not None else "").strip().lower()
+    if text in {"all", "全部"}:
+        return "all"
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = 25
+    if limit <= 0:
+        return "all"
+    return max(1, min(limit, 80))
+
+
 def enqueue_testcase_run(testcase_name: str, game_id: str,
-                         agent_id: str = "", limit: int = 25,
+                         agent_id: str = "", limit: int | str = 25,
                          engine: str = "codex") -> dict:
     game = store.get_game(game_id)
     if not game:
@@ -255,6 +268,8 @@ def enqueue_testcase_run(testcase_name: str, game_id: str,
         "testcase_system_skill_name": meta.get("system_skill_name", ""),
         "testcase_system_skill_path": meta.get("system_skill_path", ""),
         "testcase_total": meta["total"],
+        "testcase_pending": meta["pending"],
+        "testcase_limit": meta["limit"],
         "testcase_selected_count": meta["selected_count"],
         "notify_on_done": True,
     }
@@ -958,10 +973,7 @@ class Handler(BaseHTTPRequestHandler):
                 game_id = agent.get("game_id", "") if agent else ""
             if not game_id:
                 return self._json({"ok": False, "error": "這份 TestCase 未綁定遊戲，請重新選遊戲生成一次"})
-            try:
-                limit = int(b.get("limit", 25) or 25)
-            except (TypeError, ValueError):
-                limit = 25
+            limit = _parse_testcase_limit(b.get("limit", 25))
             mode = (b or {}).get("engine", "codex")
             return self._json(enqueue_testcase_run(
                 testcase_name, game_id, agent_id=agent_id,

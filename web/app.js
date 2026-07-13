@@ -1072,7 +1072,7 @@ function renderTestcaseList(testcases, games = []) {
     return;
   }
   const gameById = new Map(games.map(g => [g.id, g]));
-  box.innerHTML = testcases.slice(0, 8).map(tc => {
+  box.innerHTML = testcases.map(tc => {
     const kind = tc.testcase_kind || "standard";
     const isDestructive = kind === "destructive";
     const canRun = tc.game_id && (!isDestructive || Number(tc.risk_safe || 0) > 0);
@@ -1219,6 +1219,7 @@ $("#qa-testcase-list").onclick = async (e) => {
   if (!btn) return;
   const gameId = btn.dataset.gameId || "";
   const name = btn.dataset.name || "";
+  const limit = $("#testcase-run-limit")?.value || "25";
   if (!gameId) {
     $("#testcase-status").textContent = "這份 TestCase 尚未綁定遊戲，請重新選遊戲生成一次。";
     return;
@@ -1227,7 +1228,7 @@ $("#qa-testcase-list").onclick = async (e) => {
   $("#testcase-status").textContent = `建立「${name}」測試任務中...`;
   const job = await api(`/api/testcases/${encodeURIComponent(name)}/run`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ game_id: gameId, limit: 25 }),
+    body: JSON.stringify({ game_id: gameId, limit }),
   });
   btn.disabled = false;
   if (job.error) {
@@ -1235,7 +1236,7 @@ $("#qa-testcase-list").onclick = async (e) => {
     return;
   }
   $("#testcase-status").textContent = job.spawned
-    ? `已開始測試任務 #${job.id}，Agent 會進入遊戲並測前 ${job.testcase?.selected_count || 25} 條 TestCase。`
+    ? `已開始測試任務 #${job.id}，Agent 會進入遊戲並測 ${job.testcase?.selected_count || 0} 條 TestCase。`
     : `已建立測試任務 #${job.id}，但背景執行器啟動失敗，請查看任務佇列。`;
   loadJobs();
 };

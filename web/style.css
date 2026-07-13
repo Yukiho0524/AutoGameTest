@@ -204,6 +204,13 @@ button.small { padding: 4px 10px; font-size: 12px; }
   margin-bottom: 14px; border: 1px solid var(--line); border-radius: 8px;
   padding: 12px; background: var(--panel);
 }
+.qa-run-limit {
+  display: flex; align-items: center; gap: 8px; margin: 0;
+  color: var(--muted); font-size: 12px;
+}
+.qa-run-limit select {
+  height: 32px; min-width: 92px; padding: 4px 8px;
+}
 .qa-testcase-list {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 8px;

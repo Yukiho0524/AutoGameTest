@@ -323,6 +323,14 @@
     <div class="qa-testcase-strip">
       <div class="detail-head">
         <h3>已產出 TestCase</h3>
+        <label class="qa-run-limit">每次執行
+          <select id="testcase-run-limit">
+            <option value="10">10 條</option>
+            <option value="25" selected>25 條</option>
+            <option value="50">50 條</option>
+            <option value="all">全部</option>
+          </select>
+        </label>
       </div>
       <div id="qa-testcase-list" class="qa-testcase-list"></div>
     </div>
