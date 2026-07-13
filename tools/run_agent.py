@@ -44,6 +44,13 @@ AUTO_SEGMENT_MIN_STEPS = 5
 DEFAULT_SEGMENT_BATCH_SIZE = 2
 DEFAULT_VISUAL_MAX_TURNS = 12
 DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS = 180
+DEFAULT_AUTONOMOUS_MAX_TURNS = 20
+DEFAULT_AUTONOMOUS_TASK = """自主探索模式：
+1. 進入遊戲後自行觀察目前畫面，辨識主選單、活動、任務、商店、角色、關卡、設定等入口。
+2. 優先探索低風險 UI，記錄每一輪看到的畫面、可點擊入口、轉場結果與卡住點。
+3. 遇到登入、PVP、未知或不確定畫面時不要立刻停止，先回報觀察，再嘗試等待、返回上一層或探索其他低風險入口。
+4. 不代輸帳密、不按第三方授權、不購買付費商品、不開始會影響真人玩家的排位或匹配。
+5. 到達最大輪數、整理出主要 UI 地圖，或碰到必須真人決策的硬邊界時，回報本次探索摘要。"""
 COMMON_MOBILE_CONTROLS_SKILL = ".codex/skills/mobile-game-controls/SKILL.md"
 _CREATE_NO_WINDOW = 0x08000000
 LOG_DIR = os.path.join(ROOT, "data", "logs")
@@ -596,7 +603,8 @@ def _write_png(path: str, data: bytes) -> str:
 def build_visual_turn_prompt(game: dict, task: str, screenshot_path: str,
                              turn: int, max_turns: int,
                              state_summary: str = "",
-                             extra_skill_context: str = "") -> str:
+                             extra_skill_context: str = "",
+                             autonomous_mode: bool = False) -> str:
     """Small stateless prompt for one screenshot decision."""
     skill = _clip_text(_read(game.get("skill_path", "")), 14000)
     extra_skill_context = _clip_text(extra_skill_context, 6000)
@@ -604,11 +612,43 @@ def build_visual_turn_prompt(game: dict, task: str, screenshot_path: str,
     size_text = f"{size[0]}x{size[1]}" if size else "unknown"
     lc = game.get("launch", {})
     package = lc.get("package", "")
+    mode_name = "自主探索模式" if autonomous_mode else "快速逐圖模式"
+    task_text = (task or DEFAULT_AUTONOMOUS_TASK).strip()
     extra_block = (
         f"\n# QA 系統理解 Skill\n{extra_skill_context}\n"
         if extra_skill_context else ""
     )
-    return f"""你是 AutoGameTest 的「快速逐圖模式」判斷器。這是一個全新的短對話；不要依賴任何舊上下文，只使用本 prompt、遊戲 Skill 與這張截圖。
+    if autonomous_mode:
+        actions = """- `tap`: 需要 `x`, `y`，使用像素座標，僅用於明顯低風險入口。
+- `swipe`: 需要 `x1`, `y1`, `x2`, `y2`, 可選 `duration_ms`。
+- `wait`: 需要 `seconds`，用於 loading/轉場/觀察。
+- `back`: Android 返回鍵，用於退回上一層或離開不適合深入的頁面。
+- `launch_app`: 重新啟動遊戲 package（目前 package: `{package}`）。
+- `done`: 本次探索已形成足夠摘要，或達到自然收尾點。
+- `stop`: 只在需要輸入帳密、第三方授權、付費購買、不可逆破壞操作，或已離開遊戲且無法返回時使用。""".format(package=package)
+        rules = """- 你的目標是自己探索遊戲，不是完成使用者指定步驟。
+- 每輪只做 1 個動作，並在 JSON 裡寫清楚 `observation` 與 `learned`。
+- 遇到登入畫面不要直接停；先記錄畫面。若有「稍後、略過、返回、關閉」等安全入口可嘗試；不得輸入帳密、驗證碼或點第三方授權。
+- 遇到 PVP / 對戰入口可以瀏覽與記錄，不要開始排位、匹配或會影響真人玩家的對戰。
+- 不確定時不要直接停；優先 `wait`、`back`、或點擊明顯低風險的導覽入口。
+- 付費購買、消耗稀有資源、刪除資料、改帳號設定等不可逆行為不可執行。
+- 座標必須是目前截圖上的像素座標。"""
+        example_reason = "探索這個低風險入口，確認它對應的功能與轉場"
+    else:
+        actions = """- `tap`: 需要 `x`, `y`，使用像素座標。
+- `swipe`: 需要 `x1`, `y1`, `x2`, `y2`, 可選 `duration_ms`。
+- `wait`: 需要 `seconds`，用於 loading/轉場。
+- `back`: Android 返回鍵，用於退回上一層。
+- `launch_app`: 重新啟動遊戲 package（目前 package: `{package}`）。
+- `done`: 任務完成。
+- `stop`: 遇到登入、付費、轉蛋、PVP、未知高風險或無法判斷。""".format(package=package)
+        rules = """- 每輪只做 1 個低風險動作；不要規劃多步連點。
+- 若畫面已達成任務，回 `done`。
+- 若正在 loading，優先 `wait` 2~8 秒。
+- 不確定時回 `stop`，不要猜測高風險操作。
+- 座標必須是目前截圖上的像素座標。"""
+        example_reason = "為什麼這一步安全且符合任務"
+    return f"""你是 AutoGameTest 的「{mode_name}」判斷器。這是一個全新的短對話；不要依賴任何舊上下文，只使用本 prompt、遊戲 Skill 與這張截圖。
 
 # 遊戲
 {game.get('name', game.get('id', ''))}
@@ -617,7 +657,7 @@ def build_visual_turn_prompt(game: dict, task: str, screenshot_path: str,
 {skill or '（尚無 skill，請保守判斷）'}
 {extra_block}
 # 任務
-{task}
+{task_text}
 
 # 目前輪次與狀態
 - turn: {turn}/{max_turns}
@@ -629,19 +669,10 @@ def build_visual_turn_prompt(game: dict, task: str, screenshot_path: str,
 請直接檢視這張圖片後決定下一步。只允許回傳一個 JSON 決策，不要實際執行 ADB 指令。
 
 # 可用動作
-- `tap`: 需要 `x`, `y`，使用像素座標。
-- `swipe`: 需要 `x1`, `y1`, `x2`, `y2`, 可選 `duration_ms`。
-- `wait`: 需要 `seconds`，用於 loading/轉場。
-- `launch_app`: 重新啟動遊戲 package（目前 package: `{package}`）。
-- `done`: 任務完成。
-- `stop`: 遇到登入、付費、轉蛋、PVP、未知高風險或無法判斷。
+{actions}
 
 # 判斷規則
-- 每輪只做 1 個低風險動作；不要規劃多步連點。
-- 若畫面已達成任務，回 `done`。
-- 若正在 loading，優先 `wait` 2~8 秒。
-- 不確定時回 `stop`，不要猜測高風險操作。
-- 座標必須是目前截圖上的像素座標。
+{rules}
 
 # 回覆格式
 只回下列區塊，不要加其他文字：
@@ -652,7 +683,9 @@ AUTOGAMETEST_VISUAL_STEP:
   "action": "tap",
   "x": 100,
   "y": 200,
-  "reason": "為什麼這一步安全且符合任務",
+  "reason": "{example_reason}",
+  "observation": "目前畫面看到的 UI、文字、狀態或風險",
+  "learned": "這一輪可沉澱的遊戲知識或測試回饋",
   "next_state": "執行後預期進入的簡短狀態"
 }}
 ```
@@ -723,6 +756,10 @@ def execute_visual_decision(decision: dict, serial: str, emulator: str,
         )
         time.sleep(0.7)
         return ok, "swipe"
+    if action == "back":
+        ok = adb.keyevent(serial, "BACK", emulator)
+        time.sleep(0.7)
+        return ok, "back"
     if action == "wait":
         seconds = max(0.5, min(20.0, float(decision.get("seconds", 3) or 3)))
         time.sleep(seconds)
@@ -830,14 +867,17 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
                          timeout: int, model: str, reasoning_effort: str,
                          extra_skill_context: str = "",
                          max_turns: int = DEFAULT_VISUAL_MAX_TURNS,
-                         turn_timeout: int = DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS) -> dict:
+                         turn_timeout: int = DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS,
+                         autonomous_mode: bool = False) -> dict:
+    engine_used = "codex-autonomous-visual" if autonomous_mode else "codex-fast-visual"
+    mode_label = "自主探索模式" if autonomous_mode else "快速逐圖模式"
     if game.get("control") != "emulator":
         return {
-            "engine_used": "codex-fast-visual",
+            "engine_used": engine_used,
             "ok": False,
             "output": "",
             "attempts": [],
-            "reason": "快速逐圖模式目前只支援 Android 模擬器 Agent",
+            "reason": f"{mode_label}目前只支援 Android 模擬器 Agent",
         }
     lc = game.get("launch", {})
     emulator = adb.normalize_emulator(lc.get("emulator", "ldplayer"))
@@ -849,7 +889,7 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
     outputs: list[str] = []
     state_summary = ""
     sandbox = "danger-full-access"
-    max_turns = max(1, min(30, int(max_turns or DEFAULT_VISUAL_MAX_TURNS)))
+    max_turns = max(1, min(60, int(max_turns or DEFAULT_VISUAL_MAX_TURNS)))
     turn_timeout = max(60, min(int(timeout or turn_timeout), int(turn_timeout)))
 
     if package:
@@ -863,7 +903,7 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
                 job_id,
                 progress={
                     "stage": "fast_visual",
-                    "message": f"快速逐圖模式第 {turn}/{max_turns} 輪截圖判斷",
+                    "message": f"{mode_label}第 {turn}/{max_turns} 輪截圖判斷",
                     "turn": turn,
                     "max_turns": max_turns,
                 },
@@ -873,7 +913,7 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
             reason = "截圖失敗"
             turns.append({"turn": turn, "status": "error", "reason": reason})
             return {
-                "engine_used": "codex-fast-visual",
+                "engine_used": engine_used,
                 "ok": False,
                 "output": "\n".join(outputs),
                 "attempts": attempts,
@@ -887,6 +927,7 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
             game, task, screenshot_path, turn, max_turns,
             state_summary=state_summary,
             extra_skill_context=extra_skill_context,
+            autonomous_mode=autonomous_mode,
         )
         result = ai_runner.run_with_fallback(
             prompt,
@@ -917,7 +958,7 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
             outputs.append(
                 f"Turn {turn}: error - {reason}\n{screenshot_path}\n{output}".strip())
             return {
-                "engine_used": "codex-fast-visual",
+                "engine_used": engine_used,
                 "ok": False,
                 "output": "\n\n".join(outputs),
                 "attempts": attempts,
@@ -928,6 +969,8 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
         status = str(decision.get("status", "continue") or "continue").lower()
         action = str(decision.get("action", "") or "").lower()
         reason = str(decision.get("reason", "") or "").strip()
+        observation = str(decision.get("observation", "") or "").strip()
+        learned = str(decision.get("learned", "") or "").strip()
         next_state = str(decision.get("next_state", "") or "").strip()
         if status == "done" or action == "done":
             turns.append({
@@ -937,15 +980,46 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
                 "screenshot": screenshot_path,
                 "elapsed_seconds": elapsed,
                 "reason": reason,
+                "observation": observation,
+                "learned": learned,
                 "next_state": next_state,
             })
-            outputs.append(f"Turn {turn}: done - {reason}")
+            outputs.append(
+                f"Turn {turn}: done - {reason}"
+                + (f"\n觀察：{observation}" if observation else "")
+                + (f"\n學到：{learned}" if learned else ""))
             return {
-                "engine_used": "codex-fast-visual",
+                "engine_used": engine_used,
                 "ok": True,
                 "output": "\n".join(outputs),
                 "attempts": attempts,
-                "reason": reason or "快速逐圖模式完成",
+                "reason": reason or f"{mode_label}完成",
+                "visual_turns": turns,
+                "artifact_dir": artifact_dir,
+            }
+        if status == "stop" or action == "stop":
+            turns.append({
+                "turn": turn,
+                "status": "stopped",
+                "action": "stop",
+                "screenshot": screenshot_path,
+                "elapsed_seconds": elapsed,
+                "reason": reason,
+                "observation": observation,
+                "learned": learned,
+                "next_state": next_state,
+                "decision": decision,
+            })
+            outputs.append(
+                f"Turn {turn}: stop - {reason}"
+                + (f"\n觀察：{observation}" if observation else "")
+                + (f"\n學到：{learned}" if learned else ""))
+            return {
+                "engine_used": engine_used,
+                "ok": bool(autonomous_mode),
+                "output": "\n".join(outputs),
+                "attempts": attempts,
+                "reason": reason or f"{mode_label}停止",
                 "visual_turns": turns,
                 "artifact_dir": artifact_dir,
             }
@@ -957,6 +1031,8 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
             "screenshot": screenshot_path,
             "elapsed_seconds": elapsed,
             "reason": reason,
+            "observation": observation,
+            "learned": learned,
             "next_state": next_state,
             "execute_detail": exec_detail,
             "decision": decision,
@@ -964,10 +1040,12 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
         turns.append(turn_info)
         outputs.append(
             f"Turn {turn}: {action or '(none)'} -> {exec_detail}; "
-            f"{reason}".strip())
+            f"{reason}".strip()
+            + (f"\n觀察：{observation}" if observation else "")
+            + (f"\n學到：{learned}" if learned else ""))
         if not ok:
             return {
-                "engine_used": "codex-fast-visual",
+                "engine_used": engine_used,
                 "ok": False,
                 "output": "\n".join(outputs),
                 "attempts": attempts,
@@ -977,13 +1055,14 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
             }
         state_summary = (
             f"上一輪執行 {action}，結果 {exec_detail}。"
+            f"觀察：{observation[:120]}。"
             f"原因：{reason[:120]}。下一狀態：{next_state[:120]}。")
     return {
-        "engine_used": "codex-fast-visual",
-        "ok": False,
+        "engine_used": engine_used,
+        "ok": bool(autonomous_mode),
         "output": "\n".join(outputs),
         "attempts": attempts,
-        "reason": f"達到快速逐圖模式最大輪數 {max_turns}",
+        "reason": f"達到{mode_label}最大輪數 {max_turns}",
         "visual_turns": turns,
         "artifact_dir": artifact_dir,
     }
@@ -1001,6 +1080,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
               fast_visual_mode: bool = False,
               visual_max_turns: int = DEFAULT_VISUAL_MAX_TURNS,
               visual_turn_timeout: int = DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS,
+              autonomous_mode: bool = False,
               extra_skill_path: str = "",
               print_only=False) -> dict:
     total_start = time.perf_counter()
@@ -1011,6 +1091,16 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             return {"ok": False, "error": f"agent 不存在: {agent_id}"}
         game_id = agent.get("game_id")
         task = task or agent.get("prompt", "")
+    job_payload = {}
+    if job_id:
+        current_job = store.get_job(job_id) or {}
+        job_payload = current_job.get("payload") or {}
+    autonomous_mode = bool(
+        autonomous_mode
+        or (agent or {}).get("autonomous_mode")
+        or job_payload.get("autonomous_mode"))
+    if autonomous_mode and not str(task or "").strip():
+        task = DEFAULT_AUTONOMOUS_TASK
     if not game_id:
         return {"ok": False, "error": "缺少 game_id / agent"}
     game = store.get_game(game_id)
@@ -1019,18 +1109,18 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     if not task:
         return {"ok": False, "error": "缺少任務內容"}
 
-    job_payload = {}
-    if job_id:
-        current_job = store.get_job(job_id) or {}
-        job_payload = current_job.get("payload") or {}
     fast_visual_mode = bool(
+        autonomous_mode
+        or
         fast_visual_mode
         or (agent or {}).get("fast_visual_mode")
         or job_payload.get("fast_visual_mode"))
+    if autonomous_mode and visual_max_turns == DEFAULT_VISUAL_MAX_TURNS and not job_payload.get("visual_max_turns"):
+        visual_max_turns = DEFAULT_AUTONOMOUS_MAX_TURNS
     try:
         visual_max_turns = int(job_payload.get("visual_max_turns") or visual_max_turns)
     except (TypeError, ValueError):
-        visual_max_turns = DEFAULT_VISUAL_MAX_TURNS
+        visual_max_turns = DEFAULT_AUTONOMOUS_MAX_TURNS if autonomous_mode else DEFAULT_VISUAL_MAX_TURNS
     try:
         visual_turn_timeout = int(
             job_payload.get("visual_turn_timeout") or visual_turn_timeout)
@@ -1041,6 +1131,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
         codex_model, codex_reasoning_effort)
     performance = _base_metrics(
         game, task, codex_model, codex_reasoning_effort)
+    performance["autonomous_mode"] = bool(autonomous_mode)
     extra_skill_context = _read(extra_skill_path) if extra_skill_path else ""
     if extra_skill_context:
         performance["extra_skill_path"] = extra_skill_path
@@ -1057,7 +1148,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
 
     fast_result = None
     fast_start = time.perf_counter()
-    if fast_mode and game.get("control") == "emulator" and not print_only:
+    if fast_mode and not autonomous_mode and game.get("control") == "emulator" and not print_only:
         if job_id:
             store.update_job(
                 job_id,
@@ -1164,7 +1255,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     performance["segment_timeout_seconds"] = segment_timeout if use_segments else None
 
     if fast_visual_mode and not print_only:
-        performance["mode"] = "fast-visual"
+        performance["mode"] = "autonomous-visual" if autonomous_mode else "fast-visual"
         performance["segments_total"] = visual_max_turns
         performance["segment_timeout_seconds"] = visual_turn_timeout
         performance["visual_max_turns"] = visual_max_turns
@@ -1174,7 +1265,11 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
                 job_id,
                 progress={
                     "stage": "fast_visual",
-                    "message": "快速逐圖模式啟動：每張截圖使用新的 Codex 對話",
+                    "message": (
+                        "自主探索模式啟動：AI 逐圖觀察並回饋畫面"
+                        if autonomous_mode
+                        else "快速逐圖模式啟動：每張截圖使用新的 Codex 對話"
+                    ),
                     "fast_handoff_reason": performance.get("fast_handoff_reason", ""),
                 },
                 performance=performance,
@@ -1190,6 +1285,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
                 extra_skill_context=extra_skill_context,
                 max_turns=visual_max_turns,
                 turn_timeout=visual_turn_timeout,
+                autonomous_mode=autonomous_mode,
             )
         except Exception as e:
             result = {
@@ -1472,6 +1568,8 @@ def main(argv=None):
                     help="每段包含幾個編號步驟，預設 2，最多 4")
     ap.add_argument("--fast-visual", action="store_true",
                     help="啟用快速逐圖模式：每張截圖使用新的 Codex 最小對話")
+    ap.add_argument("--autonomous", action="store_true",
+                    help="啟用自主探索模式：允許任務空白，AI 自行探索並回饋畫面")
     ap.add_argument("--visual-max-turns", type=int,
                     default=DEFAULT_VISUAL_MAX_TURNS,
                     help="快速逐圖模式最多輪數，預設 12")
@@ -1499,6 +1597,8 @@ def main(argv=None):
         )
         if p.get("fast_visual_mode"):
             args.fast_visual = True
+        if p.get("autonomous_mode"):
+            args.autonomous = True
         if p.get("visual_max_turns"):
             try:
                 args.visual_max_turns = int(p.get("visual_max_turns"))
@@ -1523,6 +1623,7 @@ def main(argv=None):
                     fast_visual_mode=args.fast_visual,
                     visual_max_turns=args.visual_max_turns,
                     visual_turn_timeout=args.visual_turn_timeout,
+                    autonomous_mode=args.autonomous,
                     extra_skill_path=extra_skill_path,
                     print_only=args.print_prompt)
 

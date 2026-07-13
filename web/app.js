@@ -396,9 +396,10 @@ async function loadAgents() {
       <div class="meta">
         <span class="badge">${esc(g ? g.name : a.game_id)}</span>
         ${a.notify_on_done !== false ? '<span class="badge ok">完成通知</span>' : '<span class="badge">不通知</span>'}
+        ${a.autonomous_mode ? '<span class="badge ok">自主探索</span>' : ''}
         ${a.fast_visual_mode ? '<span class="badge ok">快速逐圖</span>' : ''}
       </div>
-      <p class="hint">${esc(a.prompt)}</p>
+      <p class="hint">${esc(a.prompt || (a.autonomous_mode ? "自主探索：AI 會自行遊玩並回饋看到的狀況。" : ""))}</p>
       <div class="row">
         <button class="small" data-act="run">▶ 執行</button>
         <button class="small" data-act="edit">編輯</button>
@@ -852,9 +853,10 @@ $("#schedule-reload").onclick = loadSchedule;
 function editAgent(a) {
   const f = $("#agent-form");
   f.id.value = a.id; f.game_id.value = a.game_id;
-  f.name.value = a.name; f.prompt.value = a.prompt;
+  f.name.value = a.name; f.prompt.value = a.prompt || "";
   f.notify_on_done.checked = a.notify_on_done !== false;
-  f.fast_visual_mode.checked = !!a.fast_visual_mode;
+  f.autonomous_mode.checked = !!a.autonomous_mode;
+  f.fast_visual_mode.checked = !!a.fast_visual_mode || !!a.autonomous_mode;
   window.scrollTo(0, 0);
 }
 async function runAgent(id) {
@@ -873,17 +875,33 @@ async function delAgent(id) {
   await api(`/api/agents/${id}`, { method: "DELETE" });
   loadAgents();
 }
+const agentAutonomousInput = $("#agent-form")?.autonomous_mode;
+if (agentAutonomousInput) {
+  agentAutonomousInput.onchange = () => {
+    const f = $("#agent-form");
+    if (f.autonomous_mode.checked) f.fast_visual_mode.checked = true;
+  };
+}
 $("#agent-form").onsubmit = async (e) => {
   e.preventDefault();
   const f = e.target;
+  const autonomous = f.autonomous_mode.checked;
+  const prompt = f.prompt.value.trim();
+  if (!autonomous && !prompt) {
+    alert("一般任務請填寫指令；若要讓 AI 自己玩，請勾選「自主探索模式」。");
+    f.prompt.focus();
+    return;
+  }
   await api("/api/agents", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id: f.id.value || undefined, game_id: f.game_id.value,
-                           name: f.name.value.trim(), prompt: f.prompt.value.trim(),
+                           name: f.name.value.trim(), prompt,
                            notify_on_done: f.notify_on_done.checked,
+                           autonomous_mode: autonomous,
                            fast_visual_mode: f.fast_visual_mode.checked }),
   });
   f.reset(); f.id.value = ""; f.notify_on_done.checked = true;
+  f.autonomous_mode.checked = false;
   f.fast_visual_mode.checked = false;
   loadAgents();
 };
@@ -891,6 +909,7 @@ $("#agent-reset").onclick = () => {
   $("#agent-form").reset();
   $("#agent-form").id.value = "";
   $("#agent-form").notify_on_done.checked = true;
+  $("#agent-form").autonomous_mode.checked = false;
   $("#agent-form").fast_visual_mode.checked = false;
 };
 

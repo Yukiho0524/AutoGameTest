@@ -167,14 +167,19 @@
             <input name="name" required placeholder="例：每日簽到領獎">
           </label>
           <label>指令（Prompt）
-            <textarea name="prompt" rows="7" required
+            <textarea name="prompt" rows="7"
               placeholder="1. 進入指定遊戲後，前往目標功能或關卡&#10;2. 在目標畫面依序執行要做的操作&#10;3. 遇到確認或結果畫面時，截圖確認再繼續&#10;4. 完成所有目標後，回報完成並結束任務"></textarea>
           </label>
-          <p class="hint">AI 會以遊戲玩家身分進入綁定遊戲，並依照 1、2、3、4... 的步驟順序執行；建議最後一行寫清楚完成條件。</p>
+          <p class="hint">一般任務請依照 1、2、3、4... 寫步驟；若開啟自主探索，指令可留空，AI 會自行遊玩並回饋看到的狀況。</p>
           <label class="checkline">
             <input type="checkbox" name="notify_on_done" checked>
             任務完成時網頁彈窗通知
           </label>
+          <label class="checkline">
+            <input type="checkbox" name="autonomous_mode">
+            自主探索模式（AI 自己玩並回饋畫面）
+          </label>
+          <p class="hint">適合新遊戲摸索。AI 會記錄登入、PVP、未知畫面與可疑卡點；不代輸帳密、不按第三方授權、不購買付費商品。</p>
           <label class="checkline">
             <input type="checkbox" name="fast_visual_mode">
             快速逐圖模式（每張截圖使用新的 Codex 判斷）

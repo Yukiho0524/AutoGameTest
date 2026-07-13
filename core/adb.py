@@ -358,6 +358,14 @@ def swipe(serial: str, x1: int, y1: int, x2: int, y2: int, ms: int = 300,
     return rc == 0
 
 
+def keyevent(serial: str, key: str, emulator: str | None = None) -> bool:
+    emu = normalize_emulator(emulator or emulator_for_serial(serial))
+    _ensure_connected(serial, emu)
+    rc, _, _ = _run([adb_path_for(emu), "-s", serial, "shell", "input", "keyevent",
+                     str(key)])
+    return rc == 0
+
+
 def launch_app(serial: str, package: str, emulator: str | None = None) -> bool:
     emu = normalize_emulator(emulator or emulator_for_serial(serial))
     _ensure_connected(serial, emu)
