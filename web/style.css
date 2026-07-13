@@ -213,6 +213,9 @@ button.small { padding: 4px 10px; font-size: 12px; }
   min-height: 52px; padding: 8px 10px; border: 1px solid var(--line);
   border-radius: 8px; background: var(--panel2);
 }
+.qa-testcase-row.destructive {
+  border-left: 3px solid var(--danger);
+}
 .qa-testcase-info { min-width: 0; }
 .qa-testcase-row strong {
   display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

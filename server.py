@@ -920,6 +920,29 @@ class Handler(BaseHTTPRequestHandler):
                 store.update_job(job["id"], status="error",
                                  result="無法啟動 tools/run_testgen.py")
             return self._json(job)
+        if p == "/api/testcases/destructive-generate":
+            testcase_name = os.path.basename(str(b.get("testcase_name", "")).strip())
+            if not testcase_name:
+                return self._json({"ok": False, "error": "請先選擇來源 TestCase"})
+            try:
+                meta = testcases.read_testcase_cases(testcase_name, limit=1)
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)})
+            if meta.get("testcase_kind") == "destructive":
+                return self._json({"ok": False, "error": "請選擇標準 TestCase 來產生破壞性測試"})
+            job = store.enqueue_job("testgen", {
+                "mode": "destructive",
+                "testcase_name": testcase_name,
+                "filename": testcase_name,
+                "game_id": meta.get("game_id", ""),
+                "game_name": meta.get("game_name", ""),
+                "source": "destructive",
+            })
+            job["spawned"] = spawn_runner("run_testgen.py", job["id"])
+            if not job["spawned"]:
+                store.update_job(job["id"], status="error",
+                                 result="無法啟動 tools/run_testgen.py")
+            return self._json(job)
         m = re.match(r"^/api/testcases/([^/]+)/run$", p)
         if m:
             testcase_name = os.path.basename(unquote(m.group(1)))

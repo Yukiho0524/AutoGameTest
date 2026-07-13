@@ -24,6 +24,17 @@ SUPPORTED_EXTS = {".docx", ".pdf", ".xlsx", ".xlsm", ".txt", ".md"}
 VALID_TYPES = {"顯示確認", "操作確認", "數值確認"}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
 VALID_AUTOMATION = {"A", "S", "M"}
+VALID_DESTRUCTIVE_RISKS = {"SAFE", "GUARDED", "MANUAL"}
+VALID_DESTRUCTIVE_TYPES = {
+    "連點",
+    "邊界",
+    "狀態中斷",
+    "流程逆行",
+    "資源不足",
+    "斷線重連",
+    "重啟恢復",
+    "高風險人工",
+}
 
 
 def _safe_stem(value: str) -> str:
@@ -218,6 +229,84 @@ def parse_output(output: str) -> dict[str, Any]:
     }
 
 
+def build_destructive_prompt(meta: dict[str, Any], system_skill: str = "") -> str:
+    source_cases = "\n".join(
+        f"- TC{case['no']:03d}｜{case.get('item') or '未分類'}｜"
+        f"{case.get('type') or '未分類'}｜{case.get('tc') or ''}"
+        for case in meta.get("selected", [])
+    )
+    return f"""你是資深遊戲 QA，請根據既有 TestCase 與系統理解，產出「破壞性測試」案例。
+
+# 目標
+- 不是正常流程測試，而是負向、邊界、異常、狀態中斷、重複操作、資源不足、重啟/斷線恢復等測試。
+- 每條案例必須可觀察、可判定，且要有風險分級。
+- 不可要求 AI 執行登入、付費、購買確認、抽卡確認、刪帳號、第三方授權、PVP 或不可逆操作。
+
+# 風險分級
+- SAFE：可由 AI 自動執行的低風險測試，例如返回、切頁、連點不消耗的按鈕、點不可用按鈕、取消確認視窗。
+- GUARDED：需要測試帳號、可回復狀態或人工確認測試環境，例如免費資源消耗、斷線重連、清空暫存、重啟恢復。
+- MANUAL：只產生測項，不可由 AI 自動執行，例如真實購買、抽卡確認、刪帳號、帳號綁定、PVP、不可逆資料破壞。
+
+# 既有 TestCase
+TestCase 文件：{meta.get('name', '')}
+遊戲：{meta.get('game_name', '') or meta.get('game_id', '')}
+系統：{meta.get('system', '')}
+來源企劃書：{meta.get('source_doc', '')}
+
+```text
+{_clip(source_cases, 40_000)}
+```
+
+# 系統理解 Skill
+```text
+{_clip(system_skill, 30_000)}
+```
+
+# 輸出格式
+只輸出以下純文字行，不要輸出 Markdown 表格或額外說明：
+
+SYSTEM: <系統名稱>
+DCASE: <項目>|<風險 SAFE/GUARDED/MANUAL>|<破壞類型>|<優先度>|<自動化>|<TC內容>
+ISSUE: <待釐清問題>
+"""
+
+
+def parse_destructive_output(output: str) -> dict[str, Any]:
+    system = ""
+    cases: list[tuple[str, str, str, str, str, str]] = []
+    issues: list[str] = []
+    for line in str(output or "").splitlines():
+        text = re.sub(r"^[-*]\s*", "", line.strip())
+        m = re.match(r"^SYSTEM:\s*(.+)$", text)
+        if m:
+            system = m.group(1).strip()
+            continue
+        m = re.match(r"^DCASE:\s*(.+)$", text)
+        if m:
+            parts = [p.strip() for p in m.group(1).split("|")]
+            if len(parts) >= 6:
+                item, risk, destructive_type, priority, automation = parts[:5]
+                tc = "|".join(parts[5:]).strip()
+                risk = risk.upper()
+                if risk not in VALID_DESTRUCTIVE_RISKS:
+                    risk = "MANUAL"
+                if destructive_type not in VALID_DESTRUCTIVE_TYPES:
+                    destructive_type = "高風險人工" if risk == "MANUAL" else "邊界"
+                if priority not in VALID_PRIORITIES:
+                    priority = "P1"
+                if automation not in VALID_AUTOMATION:
+                    automation = "M"
+                if risk == "MANUAL":
+                    automation = "M"
+                if item and tc:
+                    cases.append((item, risk, destructive_type, priority, automation, tc))
+            continue
+        m = re.match(r"^ISSUE:\s*(.+)$", text)
+        if m:
+            issues.append(m.group(1).strip())
+    return {"system": system, "cases": cases, "issues": issues}
+
+
 def write_testcase_xlsx(system: str, cases: list[tuple],
                         issues: list[str], doc_name: str,
                         game: dict | None = None,
@@ -285,6 +374,7 @@ def write_testcase_xlsx(system: str, cases: list[tuple],
     ws_agt.append(["game_name", (game or {}).get("name", "")])
     ws_agt.append(["source_doc", doc_name])
     ws_agt.append(["system", system or ""])
+    ws_agt.append(["testcase_kind", "standard"])
     ws_agt.append(["system_skill_name", (system_skill or {}).get("name", "")])
     ws_agt.append(["system_skill_path", (system_skill or {}).get("relative_path", "")])
     ws_agt.append(["generated_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
@@ -293,6 +383,102 @@ def write_testcase_xlsx(system: str, cases: list[tuple],
         wb.save(out)
     except PermissionError:
         out = TESTCASE_DIR / f"{_safe_stem(doc_name)}_TestCase_{datetime.now():%H%M%S}.xlsx"
+        wb.save(out)
+    return out
+
+
+def _destructive_output_name(source_name: str) -> str:
+    stem = _safe_stem(source_name)
+    stem = re.sub(r"(_TestCase|_DestructiveTestCase)$", "", stem)
+    return f"{stem}_DestructiveTestCase.xlsx"
+
+
+def write_destructive_xlsx(system: str, cases: list[tuple],
+                           issues: list[str], source_name: str,
+                           base_meta: dict[str, Any]) -> Path:
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+    except ImportError as e:
+        raise RuntimeError("缺少 openpyxl，無法寫出破壞性 TestCase xlsx") from e
+
+    ensure_dirs()
+    out = TESTCASE_DIR / _destructive_output_name(source_name)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = (re.sub(r'[\\/:*?"<>|]+', "_", system or "破壞性測試") or "破壞性測試")[:31]
+    header = ["項目", "風險", "破壞類型", "TC內容", "PASS/FAIL", "Bug Key", "備註",
+              "PASS", "FAIL", "N/A", "Total", "TC數量"]
+    ws.append(header)
+    header_font = Font(bold=True)
+    header_fill = PatternFill("solid", start_color="FCE4D6")
+    for col in range(1, len(header) + 1):
+        ws.cell(1, col).font = header_font
+        ws.cell(1, col).fill = header_fill
+    widths = {
+        "A": 18, "B": 12, "C": 14, "D": 86, "E": 11, "F": 12,
+        "G": 24, "H": 7, "I": 7, "J": 7, "K": 7, "L": 9,
+    }
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+    wrap = Alignment(vertical="top", wrap_text=True)
+    prev_item = None
+    risk_counts = {"SAFE": 0, "GUARDED": 0, "MANUAL": 0}
+    for item, risk, destructive_type, _priority, _automation, tc in cases:
+        risk_counts[risk] = risk_counts.get(risk, 0) + 1
+        ws.append([item if item != prev_item else "", risk, destructive_type, tc, "", "", ""])
+        ws.cell(ws.max_row, 4).alignment = wrap
+        prev_item = item
+    ws["H2"] = '=COUNTIF(E:E,"PASS")'
+    ws["I2"] = '=COUNTIF(E:E,"FAIL")'
+    ws["J2"] = '=COUNTIF(E:E,"N/A")'
+    ws["K2"] = "=H2+I2+J2"
+    ws["L2"] = "=COUNTA(D2:D10000)"
+
+    ws_meta = wb.create_sheet("風險與自動化")
+    ws_meta.append(["#", "項目", "風險", "破壞類型", "優先度", "自動化", "TC內容"])
+    for col in range(1, 8):
+        ws_meta.cell(1, col).font = header_font
+    for col, width in {"A": 5, "B": 18, "C": 12, "D": 14, "E": 8, "F": 10, "G": 86}.items():
+        ws_meta.column_dimensions[col].width = width
+    for index, (item, risk, destructive_type, priority, automation, tc) in enumerate(cases, 1):
+        ws_meta.append([index, item, risk, destructive_type, priority, automation, tc])
+        ws_meta.cell(ws_meta.max_row, 7).alignment = wrap
+
+    ws_issue = wb.create_sheet("待釐清問題")
+    ws_issue.column_dimensions["A"].width = 120
+    ws_issue.append([f"來源 TestCase：{source_name}"])
+    ws_issue.append([f"產出時間：{datetime.now():%Y-%m-%d %H:%M}"])
+    ws_issue.append([f"SAFE：{risk_counts.get('SAFE', 0)}"])
+    ws_issue.append([f"GUARDED：{risk_counts.get('GUARDED', 0)}"])
+    ws_issue.append([f"MANUAL：{risk_counts.get('MANUAL', 0)}"])
+    ws_issue.append([])
+    ws_issue.append(["待釐清問題"])
+    ws_issue.cell(ws_issue.max_row, 1).font = header_font
+    for index, issue in enumerate(issues, 1):
+        ws_issue.append([f"{index}. {issue}"])
+        ws_issue.cell(ws_issue.max_row, 1).alignment = wrap
+
+    ws_agt = wb.create_sheet("AutoGameTest")
+    ws_agt.sheet_state = "hidden"
+    ws_agt.append(["key", "value"])
+    ws_agt.append(["game_id", base_meta.get("game_id", "")])
+    ws_agt.append(["game_name", base_meta.get("game_name", "")])
+    ws_agt.append(["source_doc", base_meta.get("source_doc", "")])
+    ws_agt.append(["source_testcase", source_name])
+    ws_agt.append(["system", system or ""])
+    ws_agt.append(["testcase_kind", "destructive"])
+    ws_agt.append(["risk_safe", str(risk_counts.get("SAFE", 0))])
+    ws_agt.append(["risk_guarded", str(risk_counts.get("GUARDED", 0))])
+    ws_agt.append(["risk_manual", str(risk_counts.get("MANUAL", 0))])
+    ws_agt.append(["system_skill_name", base_meta.get("system_skill_name", "")])
+    ws_agt.append(["system_skill_path", base_meta.get("system_skill_path", "")])
+    ws_agt.append(["generated_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+
+    try:
+        wb.save(out)
+    except PermissionError:
+        out = TESTCASE_DIR / f"{_safe_stem(source_name)}_DestructiveTestCase_{datetime.now():%H%M%S}.xlsx"
         wb.save(out)
     return out
 
@@ -319,12 +505,19 @@ def _read_xlsx_metadata(path: Path) -> dict[str, str]:
         wb.close()
 
 
+def _iter_testcase_files() -> list[Path]:
+    if not TESTCASE_DIR.exists():
+        return []
+    paths = set(TESTCASE_DIR.glob("*_TestCase*.xlsx"))
+    paths.update(TESTCASE_DIR.glob("*_DestructiveTestCase*.xlsx"))
+    return sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
 def list_testcases() -> list[dict[str, Any]]:
     if not TESTCASE_DIR.exists():
         return []
     rows = []
-    for path in sorted(TESTCASE_DIR.glob("*_TestCase*.xlsx"),
-                       key=lambda p: p.stat().st_mtime, reverse=True):
+    for path in _iter_testcase_files():
         meta = _read_xlsx_metadata(path)
         rows.append({
             "name": path.name,
@@ -334,7 +527,12 @@ def list_testcases() -> list[dict[str, Any]]:
             "game_id": meta.get("game_id", ""),
             "game_name": meta.get("game_name", ""),
             "source_doc": meta.get("source_doc", ""),
+            "source_testcase": meta.get("source_testcase", ""),
             "system": meta.get("system", ""),
+            "testcase_kind": meta.get("testcase_kind", "standard"),
+            "risk_safe": int(meta.get("risk_safe", "0") or 0),
+            "risk_guarded": int(meta.get("risk_guarded", "0") or 0),
+            "risk_manual": int(meta.get("risk_manual", "0") or 0),
             "system_skill_name": meta.get("system_skill_name", ""),
             "system_skill_path": meta.get("system_skill_path", ""),
         })
@@ -375,7 +573,7 @@ def _referenced_system_skill_paths(exclude_testcase: Path | None = None) -> set[
     if not TESTCASE_DIR.exists():
         return refs
     exclude_resolved = exclude_testcase.resolve() if exclude_testcase else None
-    for path in TESTCASE_DIR.glob("*_TestCase*.xlsx"):
+    for path in _iter_testcase_files():
         try:
             if exclude_resolved and path.resolve() == exclude_resolved:
                 continue
@@ -467,6 +665,8 @@ def read_testcase_cases(name: str, limit: int = 25) -> dict[str, Any]:
     if not path:
         raise FileNotFoundError(f"找不到 TestCase 文件：{name}")
     limit = max(1, min(int(limit or 25), 80))
+    metadata = _read_xlsx_metadata(path)
+    testcase_kind = metadata.get("testcase_kind", "standard") or "standard"
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     try:
         ws = wb[wb.sheetnames[0]]
@@ -474,31 +674,56 @@ def read_testcase_cases(name: str, limit: int = 25) -> dict[str, Any]:
         cases: list[dict[str, Any]] = []
         current_item = ""
         for row_index, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-            cells = list(row or []) + [None] * 6
+            cells = list(row or []) + [None] * 8
             if cells[0]:
                 current_item = str(cells[0]).strip()
-            tc_text = str(cells[2] or "").strip()
-            if not tc_text:
-                continue
-            cases.append({
-                "no": len(cases) + 1,
-                "row": row_index,
-                "item": current_item,
-                "type": str(cells[1] or "").strip(),
-                "tc": tc_text,
-                "result": str(cells[3] or "").strip(),
-            })
+            if testcase_kind == "destructive":
+                tc_text = str(cells[3] or "").strip()
+                if not tc_text:
+                    continue
+                risk = str(cells[1] or "").strip().upper()
+                if risk not in VALID_DESTRUCTIVE_RISKS:
+                    risk = "MANUAL"
+                destructive_type = str(cells[2] or "").strip() or "邊界"
+                cases.append({
+                    "no": len(cases) + 1,
+                    "row": row_index,
+                    "item": current_item,
+                    "risk": risk,
+                    "type": destructive_type,
+                    "tc": tc_text,
+                    "result": str(cells[4] or "").strip(),
+                })
+            else:
+                tc_text = str(cells[2] or "").strip()
+                if not tc_text:
+                    continue
+                cases.append({
+                    "no": len(cases) + 1,
+                    "row": row_index,
+                    "item": current_item,
+                    "type": str(cells[1] or "").strip(),
+                    "tc": tc_text,
+                    "result": str(cells[3] or "").strip(),
+                })
     finally:
         wb.close()
-    pending = [case for case in cases if not case.get("result")]
-    selected = (pending or cases)[:limit]
+    if testcase_kind == "destructive":
+        safe_cases = [case for case in cases if case.get("risk") == "SAFE"]
+        pending = [case for case in safe_cases if not case.get("result")]
+        selected = (pending or safe_cases)[:limit]
+    else:
+        pending = [case for case in cases if not case.get("result")]
+        selected = (pending or cases)[:limit]
     return {
         "name": path.name,
         "path": str(path),
         "system": system,
-        **_read_xlsx_metadata(path),
+        **metadata,
+        "testcase_kind": testcase_kind,
         "total": len(cases),
         "pending": len(pending),
+        "safe_total": len([case for case in cases if case.get("risk") == "SAFE"]),
         "selected": selected,
         "selected_count": len(selected),
         "limit": limit,
@@ -510,20 +735,36 @@ def build_agent_task_from_testcase(name: str, game: dict,
                                    limit: int = 25) -> dict[str, Any]:
     meta = read_testcase_cases(name, limit=limit)
     if not meta["selected"]:
+        if meta.get("testcase_kind") == "destructive":
+            raise ValueError(f"破壞性 TestCase 沒有 SAFE 可執行案例：{name}")
         raise ValueError(f"TestCase 文件沒有可執行案例：{name}")
-    lines = "\n".join(
-        f"- TC{case['no']:03d}｜{case['item'] or '未分類'}｜"
-        f"{case['type'] or '未分類'}｜{case['tc']}"
-        for case in meta["selected"]
-    )
-    scope = "未填 PASS/FAIL 的案例" if meta["used_pending"] else "全部案例"
+    if meta.get("testcase_kind") == "destructive":
+        lines = "\n".join(
+            f"- TC{case['no']:03d}｜{case['item'] or '未分類'}｜"
+            f"{case.get('risk', 'SAFE')}｜{case['type'] or '未分類'}｜{case['tc']}"
+            for case in meta["selected"]
+        )
+        scope = "SAFE 且未填 PASS/FAIL 的破壞性案例" if meta["used_pending"] else "SAFE 破壞性案例"
+        role_line = "請以 QA 測試員身份執行破壞性 TestCase 文件中的 SAFE 測項。"
+        destructive_rules = """- 這是破壞性測試，但本次只允許執行列出的 SAFE 案例。
+- 嚴禁自行補做 GUARDED 或 MANUAL 案例；遇到任何可能消耗資源、變更帳號、購買、抽卡、PVP、刪除資料或不可逆狀態的畫面，立刻停止並回報 N/A。
+- 若 SAFE 案例因畫面狀態變成高風險，停止該案例，不要硬做。"""
+    else:
+        lines = "\n".join(
+            f"- TC{case['no']:03d}｜{case['item'] or '未分類'}｜"
+            f"{case['type'] or '未分類'}｜{case['tc']}"
+            for case in meta["selected"]
+        )
+        scope = "未填 PASS/FAIL 的案例" if meta["used_pending"] else "全部案例"
+        role_line = "請以 QA 測試員身份執行 TestCase 文件中的測項。"
+        destructive_rules = ""
     game_name = game.get("name") or game.get("id") or "指定遊戲"
     system_skill_path = str(meta.get("system_skill_path", "") or "").strip()
     system_skill_line = (
         f"系統理解 Skill：{system_skill_path}（開始測試前先讀取，理解用途、入口、規則與風險）\n"
         if system_skill_path else ""
     )
-    task = f"""請以 QA 測試員身份執行 TestCase 文件中的測項。
+    task = f"""{role_line}
 
 TestCase 文件：{meta['name']}
 遊戲：{game_name}
@@ -536,6 +777,7 @@ TestCase 文件：{meta['name']}
 
 執行規則：
 - 每條 TestCase 操作前後都要截圖判讀，不要盲點。
+{destructive_rules}
 - 若有系統理解 Skill，先用它理解該系統要做什麼、入口在哪、有哪些狀態與風險；TestCase 仍是 PASS/FAIL 判定來源。
 - 可以用遊戲 skill、圖片記憶與目前畫面判斷入口位置。
 - 登入、付費、消費、抽卡確認、第三方授權、PVP 排位都不可代操作；遇到就停止該案例並標 N/A 或 FAIL，說明原因。
@@ -747,6 +989,79 @@ def autopush_files(paths: list[Path], message: str) -> str:
         return "committed and pushed"
     except Exception as e:
         return f"git failed: {e}"
+
+
+def generate_destructive_testcases(testcase_name: str, run_ai,
+                                   on_progress=None,
+                                   autopush: bool = True) -> dict[str, Any]:
+    try:
+        meta = read_testcase_cases(testcase_name, limit=80)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    if meta.get("testcase_kind") == "destructive":
+        return {"ok": False, "error": "請選擇標準 TestCase 來產生破壞性測試"}
+    if not meta.get("selected"):
+        return {"ok": False, "error": f"TestCase 沒有可參考案例：{testcase_name}"}
+
+    system_skill = ""
+    skill_path = _resolve_project_path(meta.get("system_skill_path", ""))
+    if skill_path and skill_path.is_file() and _path_is_under(skill_path, ROOT):
+        system_skill = skill_path.read_text(encoding="utf-8", errors="replace")
+
+    if on_progress:
+        on_progress("Codex 生成破壞性 TestCase 中...")
+    prompt = build_destructive_prompt(meta, system_skill)
+    ai_result = run_ai(prompt)
+    output = ai_result.get("output", "") if isinstance(ai_result, dict) else ""
+    attempts = ai_result.get("attempts", []) if isinstance(ai_result, dict) else []
+    log_path = INPUT_DIR / f"{_safe_stem(testcase_name)}_destructive_{datetime.now():%Y%m%d_%H%M%S}.log"
+    ensure_dirs()
+    log_path.write_text(output, encoding="utf-8", errors="replace")
+    parsed = parse_destructive_output(output)
+    if not parsed["cases"]:
+        tail = "\n".join(output.strip().splitlines()[-8:])
+        return {
+            "ok": False,
+            "error": f"AI 未輸出任何破壞性測試案例。\n{tail}",
+            "attempts": attempts,
+            "log": str(log_path),
+        }
+
+    xlsx = write_destructive_xlsx(
+        parsed["system"] or meta.get("system") or Path(testcase_name).stem,
+        parsed["cases"],
+        parsed["issues"],
+        meta["name"],
+        meta,
+    )
+    risk_counts = {
+        "SAFE": sum(1 for case in parsed["cases"] if case[1] == "SAFE"),
+        "GUARDED": sum(1 for case in parsed["cases"] if case[1] == "GUARDED"),
+        "MANUAL": sum(1 for case in parsed["cases"] if case[1] == "MANUAL"),
+    }
+    git = ""
+    if autopush:
+        git = autopush_files(
+            [xlsx],
+            f"[Hibari] 新增破壞性 TestCase {xlsx.name}",
+        )
+    return {
+        "ok": True,
+        "xlsx": str(xlsx),
+        "xlsx_name": xlsx.name,
+        "source_testcase": meta["name"],
+        "cases": len(parsed["cases"]),
+        "issues": len(parsed["issues"]),
+        "risk_counts": risk_counts,
+        "git": git,
+        "attempts": attempts,
+        "log": str(log_path),
+        "message": (
+            f"已生成 {len(parsed['cases'])} 條破壞性 TestCase"
+            f"（SAFE {risk_counts['SAFE']} / GUARDED {risk_counts['GUARDED']} / MANUAL {risk_counts['MANUAL']}）"
+            + (f"；git：{git}" if git else "")
+        ),
+    }
 
 
 def generate_testcases(doc_path: str, run_ai, on_progress=None,

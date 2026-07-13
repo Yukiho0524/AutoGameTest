@@ -441,7 +441,11 @@ function baseName(p) {
   return String(p || "").split(/[\\/]/).pop();
 }
 
-function jobKindLabel(kind) {
+function jobKindLabel(kind, job = null) {
+  const payload = job?.payload || {};
+  if (kind === "testgen" && (payload.mode === "destructive" || payload.source === "destructive")) {
+    return "生成破壞性 TestCase";
+  }
   return {
     learn: "📖 學習",
     run_agent: "🕹 執行 Agent",
@@ -767,7 +771,7 @@ async function loadJobs() {
     div.className = `card job-card ${j.id === SELECTED_JOB_ID ? "selected" : ""}`;
     div.dataset.jobId = j.id;
     div.innerHTML = `
-      <h3>${jobKindLabel(j.kind)} <span class="badge">${j.status}</span></h3>
+      <h3>${jobKindLabel(j.kind, j)} <span class="badge">${j.status}</span></h3>
       <div class="meta">#${j.id} · ${esc(j.created)}</div>
       <p class="hint">${esc(JSON.stringify(j.payload))}</p>
       ${j.result ? `<p class="hint">結果：${esc(j.result)}</p>` : ""}
@@ -1035,7 +1039,7 @@ function renderQA({ diagnostics, jobs, games, agents, scripts, testcases }) {
   $("#qa-job-risk").innerHTML = recent.length ? recent.map(job => `
     <div class="qa-job-row status-${esc(job.status || "unknown")}">
       <strong>#${esc(job.id)}</strong>
-      <span>${esc(jobKindLabel(job.kind))}</span>
+      <span>${esc(jobKindLabel(job.kind, job))}</span>
       <small>${esc(job.status || "")} · ${esc(job.created || "")}</small>
     </div>`).join("") : '<p class="hint">尚無任務。</p>';
 
@@ -1068,11 +1072,18 @@ function renderTestcaseList(testcases, games = []) {
     return;
   }
   const gameById = new Map(games.map(g => [g.id, g]));
-  box.innerHTML = testcases.slice(0, 8).map(tc => `
-    <div class="qa-testcase-row">
+  box.innerHTML = testcases.slice(0, 8).map(tc => {
+    const kind = tc.testcase_kind || "standard";
+    const isDestructive = kind === "destructive";
+    const canRun = tc.game_id && (!isDestructive || Number(tc.risk_safe || 0) > 0);
+    return `
+    <div class="qa-testcase-row ${isDestructive ? "destructive" : ""}">
       <div class="qa-testcase-info">
         <strong>${esc(tc.name)}</strong>
         <small>${esc(tc.mtime || "")} · ${formatBytes(tc.size)}</small>
+        <small>${isDestructive
+          ? `破壞性測試：SAFE ${Number(tc.risk_safe || 0)} / GUARDED ${Number(tc.risk_guarded || 0)} / MANUAL ${Number(tc.risk_manual || 0)}`
+          : "標準 TestCase"}</small>
         <small>${tc.game_id
           ? `遊戲：${esc(tc.game_name || gameById.get(tc.game_id)?.name || tc.game_id)}`
           : "未綁定遊戲，請重新選遊戲生成"}</small>
@@ -1081,11 +1092,13 @@ function renderTestcaseList(testcases, games = []) {
           : ""}
       </div>
       <div class="qa-testcase-actions">
-        <button type="button" class="small testcase-run" data-name="${esc(tc.name)}" data-game-id="${esc(tc.game_id || "")}" ${tc.game_id ? "" : "disabled"}>執行</button>
+        <button type="button" class="small testcase-run" data-name="${esc(tc.name)}" data-game-id="${esc(tc.game_id || "")}" ${canRun ? "" : "disabled"}>${isDestructive ? "執行 SAFE" : "執行"}</button>
+        ${isDestructive ? "" : `<button type="button" class="small testcase-destructive" data-name="${esc(tc.name)}">破壞性</button>`}
         <a class="button-link" href="/api/testcases/${encodeURIComponent(tc.name)}/download">下載</a>
         <button type="button" class="small danger testcase-delete" data-name="${esc(tc.name)}">刪除</button>
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
 
 function qaCheckFromLevel(level, title, detail, action) {
@@ -1178,6 +1191,28 @@ $("#qa-testcase-list").onclick = async (e) => {
     const skillMsg = result.system_skill?.deleted ? "，並清理未被引用的系統 Skill" : "";
     $("#testcase-status").textContent = `已刪除「${name}」${skillMsg}。`;
     loadQA();
+    return;
+  }
+  const destructiveBtn = e.target.closest(".testcase-destructive");
+  if (destructiveBtn) {
+    const name = destructiveBtn.dataset.name || "";
+    if (!name) return;
+    destructiveBtn.disabled = true;
+    $("#testcase-status").textContent = `建立「${name}」破壞性測試生成任務中...`;
+    const job = await api("/api/testcases/destructive-generate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ testcase_name: name }),
+    });
+    destructiveBtn.disabled = false;
+    if (job.error) {
+      $("#testcase-status").textContent = `無法建立破壞性測試任務：${job.error}`;
+      return;
+    }
+    $("#testcase-status").textContent = job.spawned
+      ? `已開始生成破壞性 TestCase 任務 #${job.id}。完成後會顯示 SAFE / GUARDED / MANUAL 統計。`
+      : `已建立任務 #${job.id}，但背景執行器啟動失敗，請查看任務佇列。`;
+    loadJobs();
+    setTimeout(loadQA, 1200);
     return;
   }
   const btn = e.target.closest(".testcase-run");
