@@ -185,6 +185,59 @@ button.small { padding: 4px 10px; font-size: 12px; }
   display: block; color: var(--muted); font-size: 11px; margin-top: 2px;
 }
 
+.qa-summary {
+  display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 12px; margin-bottom: 14px;
+}
+.qa-layout {
+  display: grid; grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px; align-items: start;
+}
+.qa-layout h3, .qa-side h3 {
+  margin: 0 0 10px; font-size: 15px;
+}
+.qa-side {
+  border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+  background: var(--panel); position: sticky; top: 12px;
+}
+.qa-checklist {
+  display: flex; flex-direction: column; gap: 10px;
+}
+.qa-item {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 14px;
+  min-height: 72px; padding: 12px 14px; border: 1px solid var(--line);
+  border-left-width: 3px; border-radius: 8px; background: var(--panel);
+}
+.qa-item strong { display: block; font-size: 14px; }
+.qa-item p { margin: 4px 0; color: var(--text); overflow-wrap: anywhere; }
+.qa-item small { color: var(--muted); overflow-wrap: anywhere; }
+.qa-item > span {
+  flex: 0 0 auto; min-width: 52px; padding: 2px 8px; border-radius: 999px;
+  text-align: center; background: var(--panel2); color: var(--muted); font-size: 12px;
+}
+.qa-item.status-ok { border-left-color: var(--accent2); }
+.qa-item.status-warn { border-left-color: #f0b84f; }
+.qa-item.status-fail { border-left-color: var(--danger); }
+.qa-item.status-info { border-left-color: var(--accent); }
+.qa-job-risk {
+  display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;
+}
+.qa-job-row {
+  display: grid; grid-template-columns: auto 1fr; gap: 2px 8px;
+  padding: 8px 10px; border: 1px solid var(--line); border-left-width: 3px;
+  border-radius: 8px; background: var(--panel2); font-size: 12px;
+}
+.qa-job-row strong { grid-row: span 2; }
+.qa-job-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qa-job-row small { color: var(--muted); overflow-wrap: anywhere; }
+.qa-job-row.status-done { border-left-color: var(--accent2); }
+.qa-job-row.status-running, .qa-job-row.status-pending { border-left-color: #f0b84f; }
+.qa-job-row.status-error { border-left-color: var(--danger); }
+.qa-actions p {
+  margin: 8px 0; padding-top: 8px; border-top: 1px solid var(--line);
+  color: var(--text); overflow-wrap: anywhere;
+}
+
 .settings-layout {
   display: grid; grid-template-columns: minmax(280px, 420px) minmax(280px, 1fr);
   gap: 16px; align-items: start;
@@ -262,8 +315,9 @@ button.small { padding: 4px 10px; font-size: 12px; }
 }
 @media (max-width: 900px) {
   .schedule-layout { grid-template-columns: 1fr; }
-  .jobs-layout, .diagnostics-layout, .diagnostics-summary, .settings-layout { grid-template-columns: 1fr; }
-  .job-detail, .diagnostics-side { position: static; }
+  .jobs-layout, .diagnostics-layout, .diagnostics-summary, .settings-layout,
+  .qa-summary, .qa-layout { grid-template-columns: 1fr; }
+  .job-detail, .diagnostics-side, .qa-side { position: static; }
   .perf-grid { grid-template-columns: 1fr; }
 }
 

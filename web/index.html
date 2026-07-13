@@ -19,6 +19,7 @@
     <button class="tab" data-tab="jobs">任務佇列</button>
     <button class="tab" data-tab="scripts">腳本</button>
     <button class="tab" data-tab="schedule">排程表</button>
+    <button class="tab" data-tab="qa">QA</button>
     <button class="tab" data-tab="diagnostics">診斷</button>
     <button class="tab" data-tab="settings">設定</button>
   </nav>
@@ -285,6 +286,32 @@
       </aside>
     </div>
     <p class="hint" id="schedule-status"></p>
+  </section>
+
+  <!-- ===== QA ===== -->
+  <section id="qa" class="panel">
+    <div class="schedule-head">
+      <h2>QA 檢查台</h2>
+      <div class="actions">
+        <button id="qa-refresh" class="primary">重新整理</button>
+        <button id="qa-open-diagnostics">開啟診斷</button>
+        <button id="qa-open-jobs">開啟任務</button>
+      </div>
+    </div>
+    <p class="hint">交給別人電腦執行前，先用這裡快速確認環境、資料與最近任務狀態。</p>
+    <div id="qa-summary" class="qa-summary"></div>
+    <div class="qa-layout">
+      <div>
+        <h3>交付檢查</h3>
+        <div id="qa-checklist" class="qa-checklist"></div>
+      </div>
+      <aside class="qa-side">
+        <h3>最近任務風險</h3>
+        <div id="qa-job-risk" class="qa-job-risk"></div>
+        <h3>建議下一步</h3>
+        <div id="qa-actions" class="qa-actions"></div>
+      </aside>
+    </div>
   </section>
 
   <!-- ===== 診斷 ===== -->

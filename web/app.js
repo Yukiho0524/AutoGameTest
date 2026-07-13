@@ -32,6 +32,7 @@ $$(".tab").forEach(t => t.onclick = () => {
   if (t.dataset.tab === "agents") loadAgents();
   if (t.dataset.tab === "scripts") loadScripts();
   if (t.dataset.tab === "schedule") loadSchedule();
+  if (t.dataset.tab === "qa") loadQA();
   if (t.dataset.tab === "diagnostics") loadDiagnostics();
   if (t.dataset.tab === "settings") loadSettings();
 });
@@ -928,6 +929,143 @@ function renderLog(kind, log) {
   meta.textContent = `${log.path} · ${formatBytes(log.size)} · ${log.mtime}${log.truncated ? " · 已截斷" : ""}`;
   box.textContent = log.tail || "(空白)";
 }
+
+// ---------- QA ----------
+async function loadQA() {
+  $("#qa-summary").innerHTML = '<div class="summary-card"><strong>checking</strong></div>';
+  $("#qa-checklist").innerHTML = "";
+  $("#qa-job-risk").innerHTML = "";
+  $("#qa-actions").innerHTML = "";
+  const diagnostics = await fetchDiagnostics()
+    .then(normalizeDiagnostics)
+    .catch(e => normalizeDiagnostics({
+      summary: { status: "fail", counts: { ok: 0, warn: 0, fail: 1 } },
+      checks: [{
+        level: "fail",
+        title: "診斷 API 失敗",
+        detail: e.message || String(e),
+        action: "請重啟控制台或確認 server.py 是否正常執行。",
+      }],
+    }));
+  const [jobsData, gamesData, agentsData, scriptsData] = await Promise.all([
+    api("/api/jobs"),
+    api("/api/games"),
+    api("/api/agents"),
+    api("/api/scripts"),
+  ]);
+  renderQA({
+    diagnostics,
+    jobs: jobsData.jobs || [],
+    games: gamesData.games || [],
+    agents: agentsData.agents || [],
+    scripts: scriptsData.scripts || [],
+  });
+}
+
+function renderQA({ diagnostics, jobs, games, agents, scripts }) {
+  const jobCounts = jobs.reduce((acc, job) => {
+    const status = job.status || "unknown";
+    acc[status] = (acc[status] || 0) + 1;
+    return acc;
+  }, {});
+  const diagStatus = diagnostics.summary.status || "fail";
+  const hasCoreData = games.length > 0 && agents.length > 0;
+  const hasBlockingJobs = (jobCounts.error || 0) > 0;
+  const hasRunningJobs = (jobCounts.running || 0) > 0 || (jobCounts.pending || 0) > 0;
+  const overall = diagStatus === "fail" || hasBlockingJobs
+    ? "fail"
+    : diagStatus === "warn" || !hasCoreData || hasRunningJobs
+      ? "warn"
+      : "ok";
+
+  $("#qa-summary").innerHTML = `
+    <div class="summary-card status-${esc(overall)}">
+      <strong>${qaStatusText(overall)}</strong>
+      <span>${overall === "ok" ? "可交付測試" : "交付前需確認"}</span>
+    </div>
+    <div class="summary-card">
+      <strong>環境</strong>
+      <span>${statusText(diagStatus)}</span>
+      <small>OK ${(diagnostics.summary.counts || {}).ok || 0} · WARN ${(diagnostics.summary.counts || {}).warn || 0} · FAIL ${(diagnostics.summary.counts || {}).fail || 0}</small>
+    </div>
+    <div class="summary-card">
+      <strong>專案資料</strong>
+      <span>${games.length} 遊戲 · ${agents.length} Agent</span>
+      <small>${scripts.length} 腳本</small>
+    </div>
+    <div class="summary-card">
+      <strong>任務</strong>
+      <span>${jobs.length} 筆</span>
+      <small>running ${jobCounts.running || 0} · error ${jobCounts.error || 0}</small>
+    </div>`;
+
+  const checklist = [
+    qaCheckFromLevel(diagStatus, "環境診斷", statusText(diagStatus),
+      "若有 FAIL，先到診斷頁修復 Python、Codex、ADB 或 local.json。"),
+    qaCheck(games.length > 0 ? "ok" : "warn", "遊戲設定",
+      games.length ? `已建立 ${games.length} 個遊戲。` : "尚未建立遊戲。",
+      "至少建立一個遊戲，並確認啟動方式與模擬器路徑。"),
+    qaCheck(agents.length > 0 ? "ok" : "warn", "Agent 設定",
+      agents.length ? `已建立 ${agents.length} 個 Agent。` : "尚未建立 Agent。",
+      "建立 Agent 並用 1、2、3 分段描述任務。"),
+    qaCheck(hasBlockingJobs ? "fail" : "ok", "最近任務",
+      hasBlockingJobs ? `目前有 ${jobCounts.error || 0} 筆 error 任務。` : "沒有 error 任務。",
+      "打開任務詳情查看 stderr、效能診斷與最後一段輸出。"),
+    qaCheck(hasRunningJobs ? "warn" : "ok", "背景執行",
+      hasRunningJobs ? "仍有 running / pending 任務。" : "沒有未完成任務。",
+      "交付前建議等任務結束，或刪除任務讓 runner 一起停止。"),
+    qaCheck(scripts.length > 0 ? "ok" : "info", "腳本回放",
+      scripts.length ? `已有 ${scripts.length} 個無 AI 腳本。` : "目前沒有腳本。",
+      "常用固定流程可錄影生成腳本，減少 AI 判斷時間。"),
+  ];
+  $("#qa-checklist").innerHTML = checklist.map(renderQACheck).join("");
+
+  const recent = jobs.slice(0, 6);
+  $("#qa-job-risk").innerHTML = recent.length ? recent.map(job => `
+    <div class="qa-job-row status-${esc(job.status || "unknown")}">
+      <strong>#${esc(job.id)}</strong>
+      <span>${esc(jobKindLabel(job.kind))}</span>
+      <small>${esc(job.status || "")} · ${esc(job.created || "")}</small>
+    </div>`).join("") : '<p class="hint">尚無任務。</p>';
+
+  const actions = [];
+  if (diagStatus !== "ok") actions.push("先修診斷頁的 WARN / FAIL，這通常是別台電腦跑不起來的主因。");
+  if (!games.length) actions.push("新增至少一個遊戲，並填好啟動方式、package 或 exe。");
+  if (!agents.length) actions.push("新增 Agent，prompt 用條列步驟描述，避免一整段自然語言。");
+  if (hasBlockingJobs) actions.push("清掉或修復 error 任務，避免 QA 看到舊錯誤誤判版本。");
+  if (hasRunningJobs) actions.push("確認 running 任務是否真的在跑；必要時刪除任務，後端會停止 runner。");
+  if (!scripts.length) actions.push("把常見重複流程錄影生成腳本，做 smoke test 會更快。");
+  if (!actions.length) actions.push("目前 QA 摘要乾淨，可以請另一台電腦拉最新版本做一次啟動測試。");
+  $("#qa-actions").innerHTML = actions.map(a => `<p>${esc(a)}</p>`).join("");
+}
+
+function qaCheckFromLevel(level, title, detail, action) {
+  return qaCheck(level === "fail" ? "fail" : level === "warn" ? "warn" : "ok", title, detail, action);
+}
+
+function qaCheck(level, title, detail, action) {
+  return { level, title, detail, action };
+}
+
+function renderQACheck(item) {
+  return `
+    <div class="qa-item status-${esc(item.level)}">
+      <div>
+        <strong>${esc(item.title)}</strong>
+        <p>${esc(item.detail)}</p>
+        <small>${esc(item.action)}</small>
+      </div>
+      <span>${esc(qaStatusText(item.level))}</span>
+    </div>`;
+}
+
+function qaStatusText(status) {
+  return { ok: "OK", warn: "確認", fail: "修復", info: "可選" }[status] || status;
+}
+
+$("#qa-refresh").onclick = loadQA;
+$("#qa-open-diagnostics").onclick = () => $('.tab[data-tab="diagnostics"]').click();
+$("#qa-open-jobs").onclick = () => $('.tab[data-tab="jobs"]').click();
 
 // ---------- diagnostics ----------
 async function loadDiagnostics() {
