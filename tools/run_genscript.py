@@ -50,8 +50,11 @@ DEFAULT_SCRIPT_DEFAULTS = {
 MIN_MATCH_THRESHOLD = 0.60
 MAX_MATCH_THRESHOLD = 0.80
 
-# how far before the recorded tap time to grab the frame (screenrecord lag)
-FRAME_LAG = 0.45
+# Pick a frame before the recorded tap. Screenrecord/getevent clocks can drift,
+# so try nearest-before candidates first and fall back to older stable frames.
+FRAME_PRE_TAP_OFFSETS = (0.10, 0.18, 0.30, 0.45, 0.70, 1.00)
+FRAME_STABILITY_GAP = 0.12
+FRAME_STABLE_DELTA = 8.0
 
 
 def extract_keyframes(source: str, taps: list[dict], out_dir: str) -> list[str]:
@@ -74,8 +77,7 @@ def extract_keyframes(source: str, taps: list[dict], out_dir: str) -> list[str]:
     os.makedirs(out_dir, exist_ok=True)
     saved = []
     for i, tp in enumerate(taps):
-        t = max(0.0, float(tp.get("t", 0)) - FRAME_LAG)
-        frame = _frame_at(cv2, metas, t)
+        frame = _pre_tap_frame(cv2, metas, float(tp.get("t", 0) or 0))
         if frame is None:
             continue
         path = os.path.join(out_dir, f"tap{i:02d}.png")
@@ -117,8 +119,11 @@ def extract_touch_templates(frames: list[str], taps: list[dict],
         y1, y2 = max(0, cy - half_h), min(h, cy + half_h)
         if x2 - x1 < 12 or y2 - y1 < 12:
             continue
+        crop = frame[y1:y2, x1:x2]
+        if not _template_is_distinctive(cv2, crop):
+            continue
         path = os.path.join(out_dir, f"tap{idx:02d}_template.png")
-        if cv2.imwrite(path, frame[y1:y2, x1:x2]):
+        if cv2.imwrite(path, crop):
             saved.append({
                 "tap_index": idx,
                 "image": _relative_path(path),
@@ -188,6 +193,52 @@ def _frame_at(cv2, metas, t: float):
     return None
 
 
+def _pre_tap_frame(cv2, metas, tap_time: float):
+    fallback = None
+    for offset in FRAME_PRE_TAP_OFFSETS:
+        t = max(0.0, tap_time - offset)
+        frame = _frame_at(cv2, metas, t)
+        if frame is None:
+            continue
+        if fallback is None:
+            fallback = frame
+        prev = _frame_at(cv2, metas, max(0.0, t - FRAME_STABILITY_GAP))
+        if prev is None or _frame_delta(cv2, prev, frame) <= FRAME_STABLE_DELTA:
+            return frame
+    return fallback
+
+
+def _frame_delta(cv2, a, b) -> float:
+    try:
+        ga = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY)
+        gb = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY)
+        ga = cv2.resize(ga, (96, 54), interpolation=cv2.INTER_AREA)
+        gb = cv2.resize(gb, (96, 54), interpolation=cv2.INTER_AREA)
+        return float(cv2.absdiff(ga, gb).mean())
+    except Exception:
+        return 0.0
+
+
+def _template_is_distinctive(cv2, crop) -> bool:
+    try:
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape[:2]
+        center = gray[h // 4: max(h // 4 + 1, 3 * h // 4),
+                      w // 4: max(w // 4 + 1, 3 * w // 4)]
+        _, full_std = cv2.meanStdDev(gray)
+        _, center_std = cv2.meanStdDev(center)
+        edges = cv2.Canny(center, 50, 150)
+        edge_density = (
+            cv2.countNonZero(edges) / max(1, edges.shape[0] * edges.shape[1]))
+        return not (
+            float(center_std[0][0]) < 6.0
+            and edge_density < 0.015
+            and float(full_std[0][0]) < 35.0
+        )
+    except Exception:
+        return True
+
+
 def build_generation_prompt(taps: list[dict], frames: list[str],
                             templates: list[dict],
                             meta: dict) -> str:
@@ -208,7 +259,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 {json.dumps(taps, ensure_ascii=False, indent=1)}
 ```
 
-# 每次觸控前的畫面截圖（用你的工具開圖檢視，理解每一步在點什麼）
+# 每次觸控前的畫面截圖（已盡量取點擊前一幀/穩定前置幀；用你的工具開圖檢視，理解每一步在點什麼）
 {frame_lines}
 
 # 已裁切的按鈕/點擊模板（用於 tap_image / tap_scene）
@@ -246,6 +297,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 7. 若某步畫面涉及 登入/帳密/付費/購買/轉蛋/PVP 排位：保留該步但加 `risk: true` 與 `risk_reason`，name 前加「⚠ 」。
 8. `description` 用一兩句話總結整段流程的目的。
 9. 座標鐵則：所有 x/y/x1/y1/x2/y2 一律照抄 taps.json 的正規化值，禁止修改或發明座標。
+10. 關鍵幀與模板代表「按下前」的畫面；若截圖看起來已經是按下後結果，優先把該 tap 視為時間軸偏移/無效點，不要用它當前一步的 `until` 或穩定模板。
 
 # 輸出格式（最終回覆務必包含此區塊，區塊內只放 YAML）
 AUTOGAMETEST_SCRIPT_YAML:
