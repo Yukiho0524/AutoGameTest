@@ -52,7 +52,7 @@ python server.py
 python tools/doctor.py
 ```
 
-然後開 http://127.0.0.1:8777 。八個分頁：
+然後開 http://127.0.0.1:8777 。九個分頁：
 
 - **遊戲庫**：新增/編輯遊戲。填 exe 路徑按「偵測平台」會自動判斷 Steam/Epic/Xbox/PC 並讀出 Steam AppID；模擬器遊戲則選 Android、按「列出已安裝」挑 package。每款遊戲可貼攻略網址送出「學習」任務。
 - **模擬器操控**：即時顯示模擬器畫面，**點畫面就等於送 tap 到模擬器**（透過 ADB，不佔用你的實體滑鼠鍵盤）。可開自動更新。下方有**錄影列**：按「⏺ 開始錄影」把模擬器畫面錄成 mp4（`adb screenrecord`，單段上限 180 秒、超過自動無縫接段），存檔位置可自訂並會記住（留空 = `data\recordings`），可勾選是否錄下觸控點，「開啟資料夾」直接跳到存檔位置。單段輸出 `rec_<時間>.mp4`；超過 180 秒輸出 `rec_<時間>/part01.mp4...` + `session.json`（與 GameTestAi 抽幀工具相容的格式）。錄影同時會用 `getevent` 擷取**實際觸控座標**存成 `taps.json`（腳本生成的資料來源）；錄影中從操控分頁點畫面會自動改走核心輸入層（sendevent），點擊照樣生效且會被記錄。
@@ -60,6 +60,7 @@ python tools/doctor.py
 - **任務佇列**：學習、執行 agent、生成/執行腳本產生的任務清單。可點單筆查看詳情（payload、結果、stdout/stderr log），並手動清除單筆／已完成／全部。
 - **腳本**：把錄影轉成可重放的確定性腳本。左側列出已生成腳本（可執行/查看編輯/刪除）；右側選一段**帶觸控紀錄**的錄影按「生成」——生成需要 AI（Codex 看關鍵幀為每步命名、補等待、標記風險步驟），**執行不需要 AI**（純 ADB 座標重放，每步截圖存 artifacts）。執行狀態同樣顯示在任務佇列。
 - **排程表**：週一到週日、24 小時直條行事曆。右側有兩個來源：**Agent（AI 代打）**與**腳本（無 AI 重放）**，都可拖到指定星期與整點；按「儲存排程」後，只要控制台保持執行，未來每週固定時間會自動建立並執行對應任務。
+- **QA**：懶人檢查台。彙整環境、任務、腳本與 TestCase 狀態；可把企劃書（docx / pdf / xlsx / txt / md）丟給 Codex 轉成 QA 用 TestCase xlsx，完成後在清單下載。
 - **診斷**：環境自檢，逐項顯示 Python、資料夾寫入、8777 port、LDPlayer/ADB、BlueStacks、Codex CLI、`config/local.json` 狀態，並列出最近的執行 log，方便排查問題。
 - **設定**：調整背景 AI 任務 timeout、Codex model 與推理強度等本機設定。
 
@@ -96,6 +97,7 @@ core/
   config.py              # 讀 config/local.json 與環境變數（本機路徑覆寫）
   fast_agent.py          # 模擬器 agent 的本地快速判斷層（比對安全規則秒處理）
   image_match.py         # 腳本執行用的 stdlib PNG 模板比對
+  testcases.py           # 企劃書 → QA TestCase xlsx 產生器
   visual_memory.py       # 圖片記憶（畫面 signature、狀態、風險標記）
 tools/
   ai_runner.py           # 呼叫 Codex CLI 執行腳本化提示
@@ -103,12 +105,15 @@ tools/
   run_learn.py           # 學習：抓資料 → 生成/更新 SKILL.md
   run_genscript.py       # 腳本生成（AI）：taps.json 骨架 + Codex 看幀註解
   run_script.py          # 腳本執行（無 AI）：ADB 圖片模板 / 座標重放
+  run_testgen.py         # QA：企劃書 → TestCase job runner
   doctor.py              # 環境自檢（Python/port/模擬器/ADB/Codex/config）
   fast_rules.py          # 快速規則與截圖 signature 工具
   visual_memory.py       # 圖片記憶 CLI（add / list / context）
   start.ps1  ai.ps1      # 啟動 / AI 執行的 PowerShell 包裝
 web/
-  index.html app.js style.css   # 前端（7 分頁控制台）
+  index.html app.js style.css   # 前端（9 分頁控制台）
+TESTCASE_SPEC.md         # 企劃書轉 QA TestCase 的撰寫規範
+TestCase/                # 產出的 TestCase xlsx 與企劃書備份（_input/ 不進 git）
 config/
   local.json             # 本機路徑設定（git 忽略）；範本見 config.example.json
 data/
@@ -129,13 +134,14 @@ data/
 AGENTS.md                # Codex 專案指引（處理待辦任務、鐵則、資料流）
 ```
 
-## AI 認知任務如何執行（learn / run_agent）
+## AI 任務如何執行（learn / run_agent / testgen）
 
-機械操作由 Python 控制台處理；**遊戲認知（學習、代打）由 Codex 執行**。
-控制台的「學習」「執行 Agent」按鈕會在 `data/jobs/` 寫入任務檔，並立即背景執行：
+機械操作由 Python 控制台處理；**學習、代打與 QA 文件生成由 Codex 執行**。
+控制台的「學習」「執行 Agent」「生成 TestCase」按鈕會在 `data/jobs/` 寫入任務檔，並立即背景執行：
 1. learn：由 `tools/run_learn.py` 讀取遊戲設定與 `sources`，必要時請 AI 自行搜尋公開網路資料，生成/更新 `.codex/skills/<遊戲>/SKILL.md`
 2. run_agent：由 `tools/run_agent.py` 載入該遊戲 skill + agent → 依控制模式操作遊戲 → 完成後回報
-3. 任務檔會標記 `running` / `done` / `error`，並填入 `result`、`engine_used`、`attempts`
+3. testgen：由 `tools/run_testgen.py` 抽取企劃書文字，依 `TESTCASE_SPEC.md` 交給 Codex 設計 CASE，輸出 `TestCase/<企劃書檔名>_TestCase.xlsx`
+4. 任務檔會標記 `running` / `done` / `error`，並填入 `result`、`engine_used`、`attempts`
 
 新增遊戲時若勾選「儲存後自動建立/更新 Skill」，系統會自動建立學習任務。可填攻略/wiki/官方網站網址；若留空，AI 會嘗試自行查找公開資料。
 

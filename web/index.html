@@ -299,6 +299,28 @@
       </div>
     </div>
     <p class="hint">交給別人電腦執行前，先用這裡快速確認環境、資料與最近任務狀態。</p>
+    <div class="qa-testgen card">
+      <h3>企劃書 → QA TestCase</h3>
+      <form id="testcase-form" class="qa-testcase-form">
+        <label>上傳企劃書
+          <input id="testcase-file" type="file" accept=".docx,.pdf,.xlsx,.xlsm,.txt,.md">
+        </label>
+        <label>或填本機路徑
+          <input id="testcase-path" placeholder="C:\...\企劃書.docx">
+        </label>
+        <div class="actions">
+          <button type="submit" class="primary">生成 TestCase</button>
+          <button type="button" id="testcase-list-refresh">重新整理清單</button>
+        </div>
+      </form>
+      <p class="hint" id="testcase-status">支援 docx / pdf / xlsx / txt / md。生成會進任務佇列，完成後輸出到 TestCase/。</p>
+    </div>
+    <div class="qa-testcase-strip">
+      <div class="detail-head">
+        <h3>已產出 TestCase</h3>
+      </div>
+      <div id="qa-testcase-list" class="qa-testcase-list"></div>
+    </div>
     <div id="qa-summary" class="qa-summary"></div>
     <div class="qa-layout">
       <div>

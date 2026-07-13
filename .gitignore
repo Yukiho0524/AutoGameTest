@@ -7,5 +7,6 @@ data/recordings/
 data/settings.json
 data/schedules.json
 config/local.json
+TestCase/_input/
 *.tmp
 shot_test.png

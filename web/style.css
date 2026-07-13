@@ -189,6 +189,41 @@ button.small { padding: 4px 10px; font-size: 12px; }
   display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr));
   gap: 12px; margin-bottom: 14px;
 }
+.qa-testgen { margin-bottom: 14px; }
+.qa-testgen h3, .qa-testcase-strip h3 {
+  margin: 0 0 10px; font-size: 15px;
+}
+.qa-testcase-form {
+  display: grid; grid-template-columns: minmax(220px, 1fr) minmax(260px, 1.2fr) auto;
+  gap: 10px; align-items: end;
+}
+.qa-testcase-form label { margin: 0; }
+.qa-testcase-form .actions { margin: 0; }
+.qa-testcase-strip {
+  margin-bottom: 14px; border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px; background: var(--panel);
+}
+.qa-testcase-list {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+}
+.qa-testcase-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  min-height: 52px; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--panel2);
+}
+.qa-testcase-row strong {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.qa-testcase-row small {
+  display: block; color: var(--muted); font-size: 11px; margin-top: 2px;
+}
+.button-link {
+  flex: 0 0 auto; color: var(--text); text-decoration: none;
+  border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px;
+  font-size: 12px; background: var(--panel);
+}
+.button-link:hover { border-color: var(--accent); }
 .qa-layout {
   display: grid; grid-template-columns: minmax(0, 1fr) 320px;
   gap: 16px; align-items: start;
@@ -317,6 +352,7 @@ button.small { padding: 4px 10px; font-size: 12px; }
   .schedule-layout { grid-template-columns: 1fr; }
   .jobs-layout, .diagnostics-layout, .diagnostics-summary, .settings-layout,
   .qa-summary, .qa-layout { grid-template-columns: 1fr; }
+  .qa-testcase-form { grid-template-columns: 1fr; }
   .job-detail, .diagnostics-side, .qa-side { position: static; }
   .perf-grid { grid-template-columns: 1fr; }
 }

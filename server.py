@@ -20,9 +20,10 @@ import time
 import traceback
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs, quote, unquote
 
-from core import store, platforms, launcher, adb, config, recorder, scripts
+from core import store, platforms, launcher, adb, config, recorder, scripts, testcases
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 _CREATE_NO_WINDOW = 0x08000000
@@ -727,6 +728,29 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/scripts":
             return self._json({"scripts": scripts.list_scripts(),
                                "yaml_available": scripts.yaml_available()})
+        if p == "/api/testcases":
+            return self._json({"testcases": testcases.list_testcases()})
+        m = re.match(r"^/api/testcases/([^/]+)/download$", p)
+        if m:
+            name = os.path.basename(unquote(m.group(1)))
+            full = testcases.TESTCASE_DIR / name
+            if not full.is_file() or full.suffix.lower() != ".xlsx":
+                return self.send_error(404)
+            data = full.read_bytes()
+            self.send_response(200)
+            self.send_header(
+                "Content-Type",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header(
+                "Content-Disposition",
+                f"attachment; filename*=UTF-8''{quote(name)}",
+            )
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
         m = re.match(r"^/api/scripts/([^/]+)$", p)
         if m:
             data = scripts.get_script(m.group(1))
@@ -816,6 +840,35 @@ class Handler(BaseHTTPRequestHandler):
             if not job["spawned"]:
                 store.update_job(job["id"], status="error",
                                  result="無法啟動 tools/run_genscript.py")
+            return self._json(job)
+        if p == "/api/testcases/generate":
+            try:
+                if b.get("content_base64"):
+                    filename = testcases.safe_name(str(b.get("filename", "planning.txt")))
+                    doc_path = testcases.save_upload(
+                        filename,
+                        str(b.get("content_base64", "")),
+                    )
+                    source = "upload"
+                else:
+                    doc_path = Path(str(b.get("doc_path", "")).strip())
+                    filename = doc_path.name
+                    source = "path"
+                if not doc_path or not doc_path.exists():
+                    return self._json({"ok": False, "error": f"找不到企劃書：{doc_path}"})
+                if doc_path.suffix.lower() not in testcases.SUPPORTED_EXTS:
+                    return self._json({"ok": False, "error": f"不支援的企劃書格式：{doc_path.suffix}"})
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)})
+            job = store.enqueue_job("testgen", {
+                "doc_path": str(doc_path),
+                "filename": filename,
+                "source": source,
+            })
+            job["spawned"] = spawn_runner("run_testgen.py", job["id"])
+            if not job["spawned"]:
+                store.update_job(job["id"], status="error",
+                                 result="無法啟動 tools/run_testgen.py")
             return self._json(job)
         m = re.match(r"^/api/scripts/([^/]+)/run$", p)
         if m:
