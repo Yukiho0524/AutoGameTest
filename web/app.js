@@ -1083,6 +1083,7 @@ function renderTestcaseList(testcases, games = []) {
       <div class="qa-testcase-actions">
         <button type="button" class="small testcase-run" data-name="${esc(tc.name)}" data-game-id="${esc(tc.game_id || "")}" ${tc.game_id ? "" : "disabled"}>執行</button>
         <a class="button-link" href="/api/testcases/${encodeURIComponent(tc.name)}/download">下載</a>
+        <button type="button" class="small danger testcase-delete" data-name="${esc(tc.name)}">刪除</button>
       </div>
     </div>`).join("");
 }
@@ -1159,6 +1160,26 @@ $("#testcase-form").onsubmit = async (e) => {
 };
 
 $("#qa-testcase-list").onclick = async (e) => {
+  const delBtn = e.target.closest(".testcase-delete");
+  if (delBtn) {
+    const name = delBtn.dataset.name || "";
+    if (!name) return;
+    if (!confirm(`確定刪除這份 TestCase？\n\n${name}`)) return;
+    delBtn.disabled = true;
+    $("#testcase-status").textContent = `刪除「${name}」中...`;
+    const result = await api(`/api/testcases/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    });
+    if (!result.ok) {
+      delBtn.disabled = false;
+      $("#testcase-status").textContent = `刪除失敗：${result.error || "未知錯誤"}`;
+      return;
+    }
+    const skillMsg = result.system_skill?.deleted ? "，並清理未被引用的系統 Skill" : "";
+    $("#testcase-status").textContent = `已刪除「${name}」${skillMsg}。`;
+    loadQA();
+    return;
+  }
   const btn = e.target.closest(".testcase-run");
   if (!btn) return;
   const gameId = btn.dataset.gameId || "";

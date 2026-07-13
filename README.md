@@ -60,7 +60,7 @@ python tools/doctor.py
 - **任務佇列**：學習、執行 agent、生成/執行腳本產生的任務清單。可點單筆查看詳情（payload、結果、stdout/stderr log），並手動清除單筆／已完成／全部。
 - **腳本**：把錄影轉成可重放的確定性腳本。左側列出已生成腳本（可執行/查看編輯/刪除）；右側選一段**帶觸控紀錄**的錄影按「生成」——生成需要 AI（Codex 看關鍵幀為每步命名、補等待、標記風險步驟），**執行不需要 AI**（純 ADB 座標重放，每步截圖存 artifacts）。執行狀態同樣顯示在任務佇列。
 - **排程表**：週一到週日、24 小時直條行事曆。右側有兩個來源：**Agent（AI 代打）**與**腳本（無 AI 重放）**，都可拖到指定星期與整點；按「儲存排程」後，只要控制台保持執行，未來每週固定時間會自動建立並執行對應任務。
-- **QA**：懶人檢查台。彙整環境、任務、腳本與 TestCase 狀態；生成 TestCase 前需先選擇對應遊戲，再把企劃書（docx / pdf / xlsx / txt / md）丟給 Codex 轉成 QA 用 TestCase xlsx，並建立/更新該遊戲的「系統理解 Skill」。已產出的 TestCase 會記住所屬遊戲與系統 Skill，可直接按「執行」建立 `run_agent` 測試任務，讓 Agent 進遊戲導航到該系統並先測前 25 條待測案例。
+- **QA**：懶人檢查台。彙整環境、任務、腳本與 TestCase 狀態；生成 TestCase 前需先選擇對應遊戲，再把企劃書（docx / pdf / xlsx / txt / md）丟給 Codex 轉成 QA 用 TestCase xlsx，並建立/更新該遊戲的「系統理解 Skill」。已產出的 TestCase 會記住所屬遊戲與系統 Skill，可下載、刪除，或直接按「執行」建立 `run_agent` 測試任務，讓 Agent 進遊戲導航到該系統並先測前 25 條待測案例。
 - **診斷**：環境自檢，逐項顯示 Python、資料夾寫入、8777 port、LDPlayer/ADB、BlueStacks、Codex CLI、`config/local.json` 狀態，並列出最近的執行 log，方便排查問題。
 - **設定**：調整背景 AI 任務 timeout、Codex model 與推理強度等本機設定。
 

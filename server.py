@@ -1022,6 +1022,10 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/scripts/([^/]+)$", p)
         if m:
             return self._json({"ok": scripts.delete_script(m.group(1))})
+        m = re.match(r"^/api/testcases/([^/]+)$", p)
+        if m:
+            name = os.path.basename(unquote(m.group(1)))
+            return self._json(testcases.delete_testcase(name))
         m = re.match(r"^/api/agents/([^/]+)$", p)
         if m:
             return self._json({"ok": store.delete_agent(m.group(1))})

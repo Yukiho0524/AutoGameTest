@@ -349,6 +349,114 @@ def testcase_path(name: str) -> Path | None:
     return None
 
 
+def _resolve_project_path(value: str) -> Path | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    path = Path(text)
+    if not path.is_absolute():
+        path = ROOT / path
+    try:
+        return path.resolve()
+    except OSError:
+        return None
+
+
+def _path_is_under(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _referenced_system_skill_paths(exclude_testcase: Path | None = None) -> set[str]:
+    refs: set[str] = set()
+    if not TESTCASE_DIR.exists():
+        return refs
+    exclude_resolved = exclude_testcase.resolve() if exclude_testcase else None
+    for path in TESTCASE_DIR.glob("*_TestCase*.xlsx"):
+        try:
+            if exclude_resolved and path.resolve() == exclude_resolved:
+                continue
+        except OSError:
+            continue
+        meta = _read_xlsx_metadata(path)
+        ref = _resolve_project_path(meta.get("system_skill_path", ""))
+        if ref:
+            refs.add(str(ref).lower())
+    return refs
+
+
+def _remove_system_skill_index_entry(skill_path: Path, skill_name: str) -> bool:
+    index_path = skill_path.parent.parent / "index.json"
+    if not _path_is_under(index_path, SYSTEM_SKILLS_DIR) or not index_path.is_file():
+        return False
+    try:
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    systems = data.get("systems")
+    if not isinstance(systems, dict):
+        return False
+    key = skill_name or skill_path.parent.name
+    if key not in systems:
+        return False
+    systems.pop(key, None)
+    data["systems"] = dict(sorted(systems.items()))
+    data["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    index_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return True
+
+
+def _cleanup_orphan_system_skill(meta: dict[str, str],
+                                 deleted_testcase: Path) -> dict[str, Any]:
+    skill_path = _resolve_project_path(meta.get("system_skill_path", ""))
+    if not skill_path:
+        return {"deleted": False, "reason": "no system skill"}
+    if not _path_is_under(skill_path, SYSTEM_SKILLS_DIR):
+        return {"deleted": False, "reason": "outside system skill dir"}
+    if skill_path.name != "SKILL.md":
+        return {"deleted": False, "reason": "not a generated SKILL.md"}
+    if str(skill_path).lower() in _referenced_system_skill_paths(deleted_testcase):
+        return {"deleted": False, "reason": "still referenced"}
+
+    index_updated = _remove_system_skill_index_entry(
+        skill_path,
+        meta.get("system_skill_name", ""),
+    )
+    try:
+        if skill_path.parent.is_dir():
+            shutil.rmtree(skill_path.parent)
+        return {
+            "deleted": True,
+            "path": str(skill_path),
+            "index_updated": index_updated,
+        }
+    except OSError as e:
+        return {"deleted": False, "reason": str(e), "index_updated": index_updated}
+
+
+def delete_testcase(name: str) -> dict[str, Any]:
+    path = testcase_path(name)
+    if not path:
+        return {"ok": False, "error": f"找不到 TestCase 文件：{name}"}
+    meta = _read_xlsx_metadata(path)
+    try:
+        path.unlink()
+    except OSError as e:
+        return {"ok": False, "error": f"刪除失敗：{e}"}
+    cleanup = _cleanup_orphan_system_skill(meta, path)
+    return {
+        "ok": True,
+        "deleted": str(path),
+        "system_skill": cleanup,
+    }
+
+
 def read_testcase_cases(name: str, limit: int = 25) -> dict[str, Any]:
     try:
         import openpyxl
