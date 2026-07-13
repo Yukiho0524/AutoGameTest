@@ -294,7 +294,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
   - `swipe`：x1, y1, x2, y2（取自 nx/ny 與 end_nx/end_ny）, duration_ms
   - `wait`：seconds（純等待步驟）
   - `wait_scene`：等待 image/template 或 scene/anchor 出現
-- 每步可帶：`name`（具體中文名稱，例「點擊 出擊按鈕」）、`wait_after`（該步後等待秒數）
+- 每步可帶：`name`（具體中文名稱，例「點擊 出擊按鈕」）、`wait_after`（該步後等待秒數）、`on_timeout: skip`（圖片 timeout 找不到時略過本步並繼續下一步；預設 fail）
 - 每步可帶畫面驗證：`anchor` / `scene`（操作前必須出現的模板）、`until`（操作後必須等到的模板）
 - 圖片比對欄位可用：`image` 或 `template`、`threshold`（建議 0.6~0.8，預設 0.72）、`timeout`、`region: [x1, y1, x2, y2]`
 - Airtest-like 欄位：`record_pos`（相對畫面中心位置）、`resolution`（錄製解析度）、`target_pos`（1~9 九宮格點擊位置，5=中心）、`rgb`（預設 false，灰階比對）、`allow_full_search`（預設 false，有錄製位置就只在附近找）
@@ -311,6 +311,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 8. `description` 用一兩句話總結整段流程的目的。
 9. 座標鐵則：所有 x/y/x1/y1/x2/y2 一律照抄 taps.json 的正規化值，禁止修改或發明座標。
 10. 關鍵幀與模板代表「按下前」的畫面；若截圖看起來已經是按下後結果，優先把該 tap 視為時間軸偏移/無效點，不要用它當前一步的 `until` 或穩定模板。
+11. 若某一步是可選畫面、彈窗、活動入口、廣告、教學提示、或已可能被前一步處理掉，請加 `on_timeout: skip`；執行時該圖片 timeout 找不到會跳下一步繼續找下一張。關鍵流程、付費/抽取確認、不可跳過的主路徑不要加。
 
 # 輸出格式（最終回覆務必包含此區塊，區塊內只放 YAML）
 AUTOGAMETEST_SCRIPT_YAML:
@@ -334,6 +335,7 @@ steps:
     allow_full_search: false
     threshold: 0.72
     timeout: 60
+    on_timeout: skip
     until: data/scripts/assets/.../templates/tap01_template.png
     until_timeout: 120
     wait_after: 2.0
@@ -508,6 +510,15 @@ def _copy_visual_fields(src: dict, dst: dict) -> None:
             dst[key] = clean
 
 
+def _clean_on_timeout(value) -> str:
+    text = str(value or "").strip().lower()
+    if text in ("skip", "continue", "next"):
+        return "skip"
+    if text == "fail":
+        return "fail"
+    return ""
+
+
 def _clean_defaults(value) -> dict:
     defaults = dict(DEFAULT_SCRIPT_DEFAULTS)
     if not isinstance(value, dict):
@@ -562,6 +573,9 @@ def sanitize_generated(data: dict, taps: list[dict], meta: dict) -> tuple[dict, 
             reason = str(s.get("risk_reason", "") or "").strip()
             if reason:
                 out["risk_reason"] = reason[:200]
+        on_timeout = _clean_on_timeout(s.get("on_timeout"))
+        if on_timeout:
+            out["on_timeout"] = on_timeout
         if action == "wait":
             secs = s.get("seconds", 2)
             out["seconds"] = round(min(max(float(secs), 0.2), 60), 1) \

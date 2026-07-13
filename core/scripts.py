@@ -38,6 +38,7 @@ Script schema:
         anchor: assets/foo/main.png   # 操作前需先看到的畫面/錨點
         scene: assets/foo/main.png    # 同 anchor，偏語意名稱
         until: assets/foo/done.png    # 操作後需等到的畫面/錨點
+        on_timeout: skip # 圖片 timeout 找不到時略過本步，繼續下一步
         duration_ms: 500  # long_press/swipe
         x1: ... y1: ... x2: ... y2: ...   # swipe
         seconds: 2.0      # wait
@@ -164,6 +165,9 @@ def validate_script(data: dict) -> str:
         action = s.get("action")
         if action not in VALID_ACTIONS:
             return f"step {i + 1} 動作不支援: {action}"
+        on_timeout = str(s.get("on_timeout", "") or "").strip().lower()
+        if on_timeout and on_timeout not in ("fail", "skip", "continue", "next"):
+            return f"step {i + 1} on_timeout 不支援: {s.get('on_timeout')}"
         for field in VISUAL_FIELDS:
             err = _validate_visual_spec(s.get(field), i + 1, field)
             if err:

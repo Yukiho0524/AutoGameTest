@@ -102,6 +102,7 @@ class ScriptRunner:
         self.allow_risk = bool(allow_risk)
         self.defaults = script.get("defaults") if isinstance(
             script.get("defaults"), dict) else {}
+        self.last_step_skipped = False
         if job_id:
             self.art_dir = os.path.join(ARTIFACTS_DIR, job_id)
             os.makedirs(self.art_dir, exist_ok=True)
@@ -411,9 +412,9 @@ class ScriptRunner:
             step.get("anchor_timeout"),
             self._default_seconds("visual_timeout", DEFAULT_VISUAL_TIMEOUT))
         if not self._wait_visual(step.get("anchor"), "anchor", timeout):
-            return False
+            return self._skip_on_timeout(step, "anchor timeout")
         if not self._wait_visual(step.get("scene"), "scene", timeout):
-            return False
+            return self._skip_on_timeout(step, "scene timeout")
         return True
 
     def _verify_until(self, step: dict) -> bool:
@@ -423,7 +424,19 @@ class ScriptRunner:
         timeout = _safe_float(
             step.get("until_timeout"),
             self._default_seconds("until_timeout", DEFAULT_UNTIL_TIMEOUT))
-        return self._wait_visual(until, "until", timeout)
+        if self._wait_visual(until, "until", timeout):
+            return True
+        return self._skip_on_timeout(step, "until timeout")
+
+    def _on_timeout_mode(self, step: dict) -> str:
+        return str(step.get("on_timeout", "") or "").strip().lower()
+
+    def _skip_on_timeout(self, step: dict, reason: str) -> bool:
+        if self._on_timeout_mode(step) not in ("skip", "continue", "next"):
+            return False
+        self.last_step_skipped = True
+        self._progress(f"{reason}，on_timeout=skip，略過本步並繼續下一步")
+        return True
 
     def _tap_from_match(self, match: dict, step: dict) -> bool:
         px = int(match.get("px", 0))
@@ -482,6 +495,7 @@ class ScriptRunner:
                        f"（{total} 步，裝置 {self.serial}，"
                        f"畫面 {self.width}x{self.height}）")
         for i, s in enumerate(steps, 1):
+            self.last_step_skipped = False
             action = s.get("action")
             name = s.get("name") or action
             self._progress(f"[{i}/{total}] {name}")
@@ -494,7 +508,7 @@ class ScriptRunner:
                         "error": f"step {i}（{name}）執行失敗（操作或畫面驗證未通過）"}
             self.steps_done = i
             wait_after = float(s.get("wait_after", 0) or 0)
-            if wait_after > 0:
+            if wait_after > 0 and not self.last_step_skipped:
                 time.sleep(min(wait_after, 120))
                 stable_default = self._default_seconds(
                     "stable_timeout", DEFAULT_STABLE_TIMEOUT)
@@ -517,6 +531,8 @@ class ScriptRunner:
         action = s.get("action")
         if not self._precheck_visuals(s):
             return False
+        if self.last_step_skipped:
+            return True
         ok = False
         if action == "wait":
             time.sleep(min(float(s.get("seconds", 1) or 1), 300))
@@ -537,7 +553,7 @@ class ScriptRunner:
                     f"tap_image 找不到模板：score={match.get('score', 0.0)}/"
                     f"{match.get('threshold', self._match_threshold(s))}"
                     f"{' ' + match.get('error', '') if match.get('error') else ''}")
-                return False
+                return self._skip_on_timeout(s, "tap_image timeout")
             ok = self._tap_from_match(match, s)
         elif action == "tap_scene":
             if s.get("image") or s.get("template"):
@@ -547,7 +563,7 @@ class ScriptRunner:
                         f"tap_scene 找不到模板：score={match.get('score', 0.0)}/"
                         f"{match.get('threshold', self._match_threshold(s))}"
                         f"{' ' + match.get('error', '') if match.get('error') else ''}")
-                    return False
+                    return self._skip_on_timeout(s, "tap_scene timeout")
                 ok = self._tap_from_match(match, s)
             else:
                 x, y = self._px(s["x"], s["y"])
@@ -560,6 +576,8 @@ class ScriptRunner:
                 ok = self._wait_visual(
                     s.get("scene") or s.get("anchor"), "wait_scene",
                     _safe_float(s.get("timeout"), DEFAULT_UNTIL_TIMEOUT))
+            if not ok:
+                return self._skip_on_timeout(s, "wait_scene timeout")
         elif action == "long_press":
             x, y = self._px(s["x"], s["y"])
             ms = max(400, int(s.get("duration_ms", 600)))
