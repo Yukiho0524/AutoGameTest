@@ -33,6 +33,7 @@ Script schema:
             record_pos: [0.1, 0.2]  # Airtest-like：相對畫面中心的位置
             resolution: [1280, 720]
             target_pos: 5           # 九宮格點擊位置，5=中心
+            allow_full_search: false # 有 record_pos 時預設只在錄製位置附近找
         threshold: 0.72  # 圖片比對門檻（建議 0.6~0.8）
         anchor: assets/foo/main.png   # 操作前需先看到的畫面/錨點
         scene: assets/foo/main.png    # 同 anchor，偏語意名稱

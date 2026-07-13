@@ -111,8 +111,8 @@ def extract_touch_templates(frames: list[str], taps: list[dict],
             cy = int(float(tap.get("ny")) * h)
         except (TypeError, ValueError):
             continue
-        half_w = max(36, min(180, int(w * 0.09)))
-        half_h = max(28, min(120, int(h * 0.08)))
+        half_w = max(32, min(110, int(w * 0.06)))
+        half_h = max(24, min(72, int(h * 0.055)))
         x1, x2 = max(0, cx - half_w), min(w, cx + half_w)
         y1, y2 = max(0, cy - half_h), min(h, cy + half_h)
         if x2 - x1 < 12 or y2 - y1 < 12:
@@ -130,6 +130,7 @@ def extract_touch_templates(frames: list[str], taps: list[dict],
                 "target_pos": 5,
                 "threshold": DEFAULT_SCRIPT_DEFAULTS["match_threshold"],
                 "rgb": False,
+                "allow_full_search": False,
             })
     return saved
 
@@ -197,7 +198,8 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
         f"- taps[{t.get('tap_index')}] Airtest-like Template："
         f"image={t.get('image')} record_pos={t.get('record_pos')} "
         f"resolution={t.get('resolution')} target_pos={t.get('target_pos')} "
-        f"threshold={t.get('threshold')} rgb={t.get('rgb')}"
+        f"threshold={t.get('threshold')} rgb={t.get('rgb')} "
+        f"allow_full_search={t.get('allow_full_search')}"
         for t in templates) or "（無模板圖可用，才使用座標重放）"
     return f"""你是遊戲自動化腳本產生器。使用者錄了一段親手示範的遊戲操作，以下是錄影期間 getevent 實測到的**每一次觸控原始資料**（taps.json）與每次觸控前的畫面截圖。請你**完整計算並產出可重放的腳本 YAML**。
 
@@ -222,7 +224,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
   - `match_threshold: 0.72`（圖片比對門檻，執行器會限制在 0.6~0.8）
 - steps 支援的 action：
   - `tap`：欄位 x, y（**必須直接取自對應 tap 的 nx/ny，不得自行估計**）
-  - `tap_image`：欄位 image/template 或 templates（使用上方模板路徑做圖片比對，找到後點擊模板 target_pos），可加 threshold/timeout/region/record_pos/resolution/target_pos/rgb
+  - `tap_image`：欄位 image/template 或 templates（使用上方模板路徑做圖片比對，找到後點擊模板 target_pos），可加 threshold/timeout/region/record_pos/resolution/target_pos/rgb/allow_full_search
   - `tap_scene`：先用 anchor/scene 驗證目前畫面，再用 image/template/templates 點擊；沒有 image 時才退回 x/y
   - `long_press`：x, y, duration_ms
   - `swipe`：x1, y1, x2, y2（取自 nx/ny 與 end_nx/end_ny）, duration_ms
@@ -231,13 +233,13 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 - 每步可帶：`name`（具體中文名稱，例「點擊 出擊按鈕」）、`wait_after`（該步後等待秒數）
 - 每步可帶畫面驗證：`anchor` / `scene`（操作前必須出現的模板）、`until`（操作後必須等到的模板）
 - 圖片比對欄位可用：`image` 或 `template`、`threshold`（建議 0.6~0.8，預設 0.72）、`timeout`、`region: [x1, y1, x2, y2]`
-- Airtest-like 欄位：`record_pos`（相對畫面中心位置）、`resolution`（錄製解析度）、`target_pos`（1~9 九宮格點擊位置，5=中心）、`rgb`（預設 false，灰階比對）
-- 若一個按鈕可能有多種外觀，可用 `templates: [{{image, record_pos, resolution, target_pos, threshold, rgb}}, ...]`
+- Airtest-like 欄位：`record_pos`（相對畫面中心位置）、`resolution`（錄製解析度）、`target_pos`（1~9 九宮格點擊位置，5=中心）、`rgb`（預設 false，灰階比對）、`allow_full_search`（預設 false，有錄製位置就只在附近找）
+- 若一個按鈕可能有多種外觀，可用 `templates: [{{image, record_pos, resolution, target_pos, threshold, rgb, allow_full_search}}, ...]`
 
 # 生成規則（比照 GameTestAi 的精神）
 1. 依 taps 時間順序轉成 steps；kind 對應 action（tap/long_press/swipe）。
-2. 若該 tap 有「已裁切模板」，穩定按鈕/圖示/可重複 UI 優先產生 `tap_image`，image/record_pos/resolution/target_pos/threshold/rgb 必須照抄上方 Template；只有模板不穩或畫面過場才使用 `tap`。
-3. 重要步驟請加 `until` 驗證下一個畫面；容易誤點的步驟請加 `anchor` 或 `scene` 驗證目前畫面；涉及遊戲啟動、下載、Loading、戰鬥結算或轉場，timeout/ until_timeout 請用 90~180 秒，不要太短。
+2. 若該 tap 有「已裁切模板」，穩定按鈕/圖示/可重複 UI 優先產生 `tap_image`，image/record_pos/resolution/target_pos/threshold/rgb/allow_full_search 必須照抄上方 Template；只有模板不穩、看起來像背景/空白/廣告雜訊，或畫面過場時才使用 `tap`。
+3. 重要步驟請加 `until` 驗證下一個畫面；`until` 必須是下一畫面的穩定錨點，不要使用背景空白、動畫殘影或只在錄影中偶然出現的小雜訊。容易誤點的步驟請加 `anchor` 或 `scene` 驗證目前畫面；涉及遊戲啟動、下載、Loading、戰鬥結算或轉場，timeout/ until_timeout 請用 90~180 秒，不要太短。
 4. 兩次觸控的實際間隔反映成前一步的 `wait_after`（間隔近取 1~2 秒；有載入/轉場依畫面判斷加長，上限 90；不要把實測 30 秒以上的載入硬砍成 30）。
 5. 看截圖判斷：若某次觸控落在過場/載入畫面（畫面模糊、無穩定按鈕），該點很可能是使用者在等待時的無意義點擊——改成 `wait` 或 `wait_scene` 步驟並在 name 註明，不要保留成 tap。
 6. 每步命名要具體（看圖說出點的是什麼按鈕/區域），不要只寫「點擊」。
@@ -264,6 +266,7 @@ steps:
     resolution: [1280, 720]
     target_pos: 5
     rgb: false
+    allow_full_search: false
     threshold: 0.72
     timeout: 60
     until: data/scripts/assets/.../templates/tap01_template.png

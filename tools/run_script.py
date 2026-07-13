@@ -258,7 +258,9 @@ class ScriptRunner:
             resolution=candidate.get("resolution"),
             rgb=_safe_bool(candidate.get("rgb"), False),
             scan_step=_safe_int(candidate.get("scan_step"), 0) or None,
-            max_points=_safe_int(candidate.get("max_points"), 121))
+            max_points=_safe_int(candidate.get("max_points"), 121),
+            allow_full_search=self._optional_bool(
+                candidate.get("allow_full_search")))
         for key in ("target_pos", "tap_offset", "offset"):
             if key in candidate:
                 match[key] = candidate[key]
@@ -305,10 +307,8 @@ class ScriptRunner:
                 last = self._best_candidate_match(png, candidates)
                 if last.get("found"):
                     waited = time.time() - started
-                    if waited >= 3:
-                        self._progress(
-                            f"{label} 已找到 {os.path.basename(last.get('template', label_name))}"
-                            f"（{waited:.1f}s，score={last.get('score')}）")
+                    self._progress(self._match_message(
+                        label, last, label_name, waited=waited))
                     return True
             if timeout <= 0 or time.time() >= deadline:
                 break
@@ -352,10 +352,9 @@ class ScriptRunner:
                 last = self._best_candidate_match(png, candidates)
                 if last.get("found"):
                     waited = time.time() - started
-                    if waited >= 3:
-                        self._progress(
-                            f"{step.get('action')} 已找到 {os.path.basename(last.get('template', label_name))}"
-                            f"（{waited:.1f}s，score={last.get('score')}）")
+                    self._progress(self._match_message(
+                        str(step.get("action") or "match"),
+                        last, label_name, waited=waited))
                     return last
             if timeout <= 0 or time.time() >= deadline:
                 break
@@ -376,6 +375,24 @@ class ScriptRunner:
         if len(candidates) > 3:
             names.append(f"+{len(candidates) - 3}")
         return ", ".join(names) or "template"
+
+    def _optional_bool(self, value) -> bool | None:
+        if value is None:
+            return None
+        return _safe_bool(value, False)
+
+    def _match_message(self, label: str, match: dict, fallback: str,
+                       waited: float | None = None) -> str:
+        name = os.path.basename(match.get("template") or fallback)
+        parts = [f"{label} 已找到 {name}"]
+        if waited is not None:
+            parts.append(f"{waited:.1f}s")
+        parts.append(f"score={match.get('score')}")
+        if match.get("px") is not None and match.get("py") is not None:
+            parts.append(f"pos=({match.get('px')},{match.get('py')})")
+        if match.get("search_mode"):
+            parts.append(f"mode={match.get('search_mode')}")
+        return "（".join([parts[0], "，".join(parts[1:]) + "）"]) if len(parts) > 1 else parts[0]
 
     def _best_candidate_match(self, png: bytes, candidates: list[dict]) -> dict:
         best = {"found": False, "score": 0.0, "error": ""}
@@ -434,6 +451,7 @@ class ScriptRunner:
             py += int(round(dy))
         px = max(0, min(self.width - 1, px))
         py = max(0, min(self.height - 1, py))
+        self._progress(f"執行點擊：({px},{py})")
         return adb.tap(self.serial, px, py, self.emulator)
 
     # ---- run ----

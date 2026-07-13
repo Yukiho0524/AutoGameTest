@@ -1,9 +1,8 @@
 """Small PNG template matcher for script replay.
 
-The project intentionally avoids requiring OpenCV on every user's machine, so
-this module uses the existing stdlib PNG decoder from fast_agent and a sampled
-mean-absolute-difference matcher. It is not meant for fuzzy object recognition;
-it is for stable UI buttons cropped from recordings.
+OpenCV is used when available for Airtest-like normalized cross-correlation.
+The project still runs without OpenCV: the fallback uses the existing stdlib
+PNG decoder from fast_agent and a sampled NCC matcher.
 """
 from __future__ import annotations
 
@@ -13,8 +12,16 @@ from typing import Any
 
 from . import fast_agent
 
+try:  # OpenCV is optional on other users' machines.
+    import cv2  # type: ignore
+    import numpy as np  # type: ignore
+except Exception:  # pragma: no cover - depends on local environment
+    cv2 = None
+    np = None
+
 
 DEFAULT_THRESHOLD = 0.72
+MIN_TEMPLATE_STDDEV = 4.0
 
 
 def normalize_region(region: Any, width: int, height: int) -> tuple[int, int, int, int]:
@@ -50,7 +57,8 @@ def match_template(screen_png: bytes, template_path: str, *,
                    resolution: Any = None,
                    rgb: bool = False,
                    scan_step: int | None = None,
-                   max_points: int = 121) -> dict:
+                   max_points: int = 121,
+                   allow_full_search: bool | None = None) -> dict:
     """Find template_path in screen_png.
 
     Returns a dict with found/score and normalized center x/y. The matcher uses
@@ -61,6 +69,14 @@ def match_template(screen_png: bytes, template_path: str, *,
                 "error": f"template not found: {template_path}"}
     with open(template_path, "rb") as f:
         template_png = f.read()
+    if cv2 is not None and np is not None:
+        result = _match_template_cv2(
+            screen_png, template_png, template_path,
+            threshold=threshold, region=region, record_pos=record_pos,
+            resolution=resolution, rgb=rgb,
+            allow_full_search=allow_full_search)
+        if result is not None:
+            return result
     try:
         sw, sh, screen = fast_agent._decode_png_rgb(screen_png)
         tw, th, template = fast_agent._decode_png_rgb(template_png)
@@ -71,13 +87,9 @@ def match_template(screen_png: bytes, template_path: str, *,
                 "error": f"template size {tw}x{th} incompatible with screen {sw}x{sh}"}
 
     points = _sample_points(tw, th, max_points=max_points)
-    step = scan_step or max(3, min(18, min(tw, th) // 8 or 3))
-    search_regions = []
-    predicted = None if region is not None else _predict_region(
-        record_pos, resolution, sw, sh, tw, th)
-    if predicted:
-        search_regions.append(("predicted", predicted))
-    search_regions.append(("full", normalize_region(region, sw, sh)))
+    step = scan_step or _default_scan_step(record_pos, tw, th)
+    search_regions = _search_regions(
+        region, record_pos, resolution, sw, sh, tw, th, allow_full_search)
 
     best = None
     for mode, bounds in search_regions:
@@ -85,6 +97,12 @@ def match_template(screen_png: bytes, template_path: str, *,
             screen, template, bounds, sw, sh, tw, th, points, step, rgb=rgb)
         if not result:
             continue
+        if mode == "predicted":
+            focused = _search_expected_position(
+                screen, template, record_pos, resolution, sw, sh, tw, th,
+                points, rgb=rgb)
+            if focused and focused["score"] > result["score"]:
+                result = focused
         result["search_mode"] = mode
         if best is None or result["score"] > best["score"]:
             best = result
@@ -97,6 +115,73 @@ def match_template(screen_png: bytes, template_path: str, *,
     return _format_result(best, threshold, template_path, tw, th, sw, sh)
 
 
+def _match_template_cv2(screen_png: bytes, template_png: bytes,
+                        template_path: str, *, threshold: float,
+                        region: Any, record_pos: Any, resolution: Any,
+                        rgb: bool,
+                        allow_full_search: bool | None) -> dict | None:
+    flag = cv2.IMREAD_COLOR if rgb else cv2.IMREAD_GRAYSCALE
+    screen_img = cv2.imdecode(np.frombuffer(screen_png, np.uint8), flag)
+    template_img = cv2.imdecode(np.frombuffer(template_png, np.uint8), flag)
+    if screen_img is None or template_img is None:
+        return None
+    sh, sw = screen_img.shape[:2]
+    th, tw = template_img.shape[:2]
+    if tw <= 0 or th <= 0 or tw > sw or th > sh:
+        return {"found": False, "score": 0.0,
+                "error": f"template size {tw}x{th} incompatible with screen {sw}x{sh}"}
+
+    gray_template = (cv2.cvtColor(template_img, cv2.COLOR_BGR2GRAY)
+                     if rgb else template_img)
+    _, stddev = cv2.meanStdDev(gray_template)
+    if float(stddev[0][0]) < MIN_TEMPLATE_STDDEV:
+        return {"found": False, "score": 0.0,
+                "threshold": float(threshold),
+                "error": "template too plain for reliable matching",
+                "template": template_path}
+
+    search_regions = _search_regions(
+        region, record_pos, resolution, sw, sh, tw, th, allow_full_search)
+    best = None
+    for mode, bounds in search_regions:
+        result = _search_region_cv2(screen_img, template_img, bounds,
+                                    sw, sh, tw, th)
+        if not result:
+            continue
+        result["search_mode"] = mode
+        if best is None or result["score"] > best["score"]:
+            best = result
+        if result["score"] >= float(threshold):
+            return _format_result(result, threshold, template_path,
+                                  tw, th, sw, sh)
+
+    if best is None:
+        return {"found": False, "score": 0.0, "threshold": float(threshold),
+                "error": "search region too small", "template": template_path}
+    return _format_result(best, threshold, template_path, tw, th, sw, sh)
+
+
+def _search_region_cv2(screen_img, template_img,
+                       bounds: tuple[int, int, int, int],
+                       sw: int, sh: int, tw: int, th: int) -> dict | None:
+    x1, y1, x2, y2 = bounds
+    x2 = min(x2, sw - tw + 1)
+    y2 = min(y2, sh - th + 1)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    crop = screen_img[y1:y2 + th - 1, x1:x2 + tw - 1]
+    if crop.shape[0] < th or crop.shape[1] < tw:
+        return None
+    scores = cv2.matchTemplate(crop, template_img, cv2.TM_CCOEFF_NORMED)
+    scores = np.nan_to_num(scores, nan=-1.0, posinf=-1.0, neginf=-1.0)
+    _, max_val, _, max_loc = cv2.minMaxLoc(scores)
+    best_x = x1 + int(max_loc[0])
+    best_y = y1 + int(max_loc[1])
+    return {"score": float(max_val),
+            "left": best_x, "top": best_y,
+            "right": best_x + tw, "bottom": best_y + th}
+
+
 def _sample_points(width: int, height: int,
                    max_points: int = 121) -> list[tuple[int, int]]:
     side = max(3, int(math.sqrt(max_points)))
@@ -105,6 +190,27 @@ def _sample_points(width: int, height: int,
     ys = sorted({min(height - 1, round((i + 0.5) * height / side))
                  for i in range(side)})
     return [(x, y) for y in ys for x in xs]
+
+
+def _default_scan_step(record_pos: Any, tw: int, th: int) -> int:
+    coarse = max(3, min(18, min(tw, th) // 8 or 3))
+    if record_pos is not None:
+        return min(coarse, 5)
+    return coarse
+
+
+def _search_regions(region: Any, record_pos: Any, resolution: Any,
+                    sw: int, sh: int, tw: int, th: int,
+                    allow_full_search: bool | None) -> list[tuple[str, tuple[int, int, int, int]]]:
+    if region is not None:
+        return [("region", normalize_region(region, sw, sh))]
+    predicted = _predict_region(record_pos, resolution, sw, sh, tw, th)
+    if predicted:
+        regions = [("predicted", predicted)]
+        if allow_full_search is True:
+            regions.append(("full", normalize_region(None, sw, sh)))
+        return regions
+    return [("full", normalize_region(None, sw, sh))]
 
 
 def _search_region(screen, template, bounds: tuple[int, int, int, int],
@@ -142,6 +248,22 @@ def _search_region(screen, template, bounds: tuple[int, int, int, int],
             "right": best_x + tw, "bottom": best_y + th}
 
 
+def _search_expected_position(screen, template, record_pos: Any,
+                              resolution: Any, sw: int, sh: int,
+                              tw: int, th: int,
+                              points: list[tuple[int, int]],
+                              rgb: bool = False) -> dict | None:
+    expected = _expected_top_left(record_pos, resolution, sw, sh, tw, th)
+    if expected is None:
+        return None
+    ex, ey = expected
+    radius = max(8, min(24, max(tw, th) // 10))
+    bounds = (ex - radius, ey - radius, ex + radius + 1, ey + radius + 1)
+    bounds = normalize_region(bounds, sw, sh)
+    return _search_region(screen, template, bounds, sw, sh, tw, th,
+                          points, 1, rgb=rgb)
+
+
 def _format_result(result: dict, threshold: float, template_path: str,
                    tw: int, th: int, sw: int, sh: int) -> dict:
     cx = result["left"] + tw / 2.0
@@ -170,6 +292,23 @@ def _format_result(result: dict, threshold: float, template_path: str,
 
 def _predict_region(record_pos: Any, resolution: Any, sw: int, sh: int,
                     tw: int, th: int) -> tuple[int, int, int, int] | None:
+    expected = _expected_top_left(record_pos, resolution, sw, sh, tw, th)
+    if expected is None:
+        return None
+    left_at_center, top_at_center = expected
+    cx = left_at_center + tw / 2
+    cy = top_at_center + th / 2
+    margin = max(64, int(max(tw, th) * 0.75), int(min(sw, sh) * 0.08))
+    margin = min(margin, max(80, int(min(sw, sh) * 0.25)))
+    left = int(cx - tw / 2 - margin)
+    top = int(cy - th / 2 - margin)
+    right = int(cx + tw / 2 + margin)
+    bottom = int(cy + th / 2 + margin)
+    return normalize_region((left, top, right, bottom), sw, sh)
+
+
+def _expected_top_left(record_pos: Any, resolution: Any, sw: int, sh: int,
+                       tw: int, th: int) -> tuple[int, int] | None:
     try:
         dx, dy = [float(v) for v in record_pos]
     except (TypeError, ValueError):
@@ -186,12 +325,11 @@ def _predict_region(record_pos: Any, resolution: Any, sw: int, sh: int,
     rec_y = (0.5 + dy) * rh
     cx = rec_x * sw / rw
     cy = rec_y * sh / rh
-    margin = max(120, int(max(tw, th) * 3.0))
-    left = int(cx - tw / 2 - margin)
-    top = int(cy - th / 2 - margin)
-    right = int(cx + tw / 2 + margin)
-    bottom = int(cy + th / 2 + margin)
-    return normalize_region((left, top, right, bottom), sw, sh)
+    left = int(round(cx - tw / 2))
+    top = int(round(cy - th / 2))
+    left = max(0, min(max(0, sw - tw), left))
+    top = max(0, min(max(0, sh - th), top))
+    return left, top
 
 
 def _gray(pixel: tuple[int, int, int]) -> int:
@@ -201,13 +339,31 @@ def _gray(pixel: tuple[int, int, int]) -> int:
 
 def _score_at(screen, template, sx: int, sy: int,
               points: list[tuple[int, int]], rgb: bool = False) -> float:
-    total = 0
+    screen_vals = []
+    template_vals = []
     for tx, ty in points:
         sr, sg, sb = screen[sy + ty][sx + tx]
         tr, tg, tb = template[ty][tx]
         if rgb:
-            total += abs(sr - tr) + abs(sg - tg) + abs(sb - tb)
+            screen_vals.extend((sr, sg, sb))
+            template_vals.extend((tr, tg, tb))
         else:
-            total += abs(_gray((sr, sg, sb)) - _gray((tr, tg, tb)))
-    max_diff = len(points) * 255 * (3 if rgb else 1)
-    return 1.0 - (total / max_diff if max_diff else 1.0)
+            screen_vals.append(_gray((sr, sg, sb)))
+            template_vals.append(_gray((tr, tg, tb)))
+    n = len(screen_vals)
+    if n <= 1:
+        return 0.0
+    screen_mean = sum(screen_vals) / n
+    template_mean = sum(template_vals) / n
+    num = 0.0
+    screen_den = 0.0
+    template_den = 0.0
+    for sv, tv in zip(screen_vals, template_vals):
+        sd = sv - screen_mean
+        td = tv - template_mean
+        num += sd * td
+        screen_den += sd * sd
+        template_den += td * td
+    if screen_den <= 1e-9 or template_den <= 1e-9:
+        return 0.0
+    return num / math.sqrt(screen_den * template_den)
