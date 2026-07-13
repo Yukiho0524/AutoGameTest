@@ -61,6 +61,7 @@ from . import store as _store
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS_DIR = os.path.join(ROOT, "data", "scripts")
+SCRIPT_ASSETS_DIR = os.path.join(SCRIPTS_DIR, "assets")
 
 _lock = threading.Lock()
 
@@ -71,6 +72,7 @@ VALID_ACTIONS = {
 VISION_ACTIONS = {"tap_image", "tap_scene", "wait_scene"}
 VISUAL_FIELDS = ("anchor", "scene", "until")
 IMAGE_FIELDS = ("image", "template")
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
 def _slug(text: str) -> str:
@@ -150,6 +152,114 @@ def get_script_text(script_id: str) -> str:
             return f.read()
     except OSError:
         return ""
+
+
+def script_asset_path(path_ref: str) -> str:
+    """Return an absolute, safe image path under data/scripts/assets."""
+    rel = _script_asset_rel(path_ref)
+    return os.path.join(ROOT, rel) if rel else ""
+
+
+def script_assets(script_id: str) -> list[dict]:
+    """Image assets referenced by a generated script, with context crops."""
+    data = get_script(script_id)
+    if not data:
+        return []
+    seen: dict[str, dict] = {}
+    for i, step in enumerate(data.get("steps") or [], 1):
+        if not isinstance(step, dict):
+            continue
+        name = str(step.get("name") or step.get("action") or "").strip()
+        label = f"{i}. {name}" if name else f"Step {i}"
+        _collect_script_asset_refs(step, label, "step", seen)
+    return list(seen.values())
+
+
+def _script_asset_rel(path_ref: str) -> str:
+    if not isinstance(path_ref, str):
+        return ""
+    raw = path_ref.strip()
+    if not raw:
+        return ""
+    raw = raw.replace("\\", os.sep).replace("/", os.sep)
+    full = raw if os.path.isabs(raw) else os.path.join(ROOT, raw)
+    full = os.path.abspath(os.path.normpath(full))
+    assets_root = os.path.abspath(SCRIPT_ASSETS_DIR)
+    try:
+        common = os.path.commonpath([
+            os.path.normcase(assets_root),
+            os.path.normcase(full),
+        ])
+    except ValueError:
+        return ""
+    if common != os.path.normcase(assets_root):
+        return ""
+    if not os.path.isfile(full):
+        return ""
+    if os.path.splitext(full)[1].lower() not in IMAGE_EXTENSIONS:
+        return ""
+    return os.path.relpath(full, ROOT).replace(os.sep, "/")
+
+
+def _context_for_template(rel_path: str) -> str:
+    rel = str(rel_path or "").replace("\\", "/")
+    marker = "/templates/"
+    if marker not in rel:
+        return ""
+    prefix, filename = rel.rsplit(marker, 1)
+    stem, ext = os.path.splitext(filename)
+    suffix = "_template"
+    context_stem = stem[:-len(suffix)] + "_context" if stem.endswith(suffix) else f"{stem}_context"
+    return _script_asset_rel(f"{prefix}/contexts/{context_stem}{ext}")
+
+
+def _add_script_asset(path_ref: str, label: str, usage: str,
+                      seen: dict[str, dict]) -> None:
+    rel = _script_asset_rel(path_ref)
+    if not rel:
+        return
+    existing = seen.get(rel)
+    if existing:
+        if usage and usage not in existing["usages"]:
+            existing["usages"].append(usage)
+        return
+    context = _context_for_template(rel)
+    seen[rel] = {
+        "image": rel,
+        "context_image": context,
+        "filename": os.path.basename(rel),
+        "label": label,
+        "usage": usage,
+        "usages": [usage] if usage else [],
+    }
+
+
+def _collect_script_asset_refs(value, label: str, usage: str,
+                               seen: dict[str, dict]) -> None:
+    if value in (None, "", []):
+        return
+    if isinstance(value, str):
+        _add_script_asset(value, label, usage, seen)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_script_asset_refs(item, label, usage, seen)
+        return
+    if not isinstance(value, dict):
+        return
+    for key in IMAGE_FIELDS:
+        if isinstance(value.get(key), str):
+            _add_script_asset(value[key], label, f"{usage}.{key}", seen)
+    templates = value.get("templates")
+    if isinstance(templates, list):
+        for item in templates:
+            _collect_script_asset_refs(item, label, f"{usage}.templates", seen)
+    for key in VISUAL_FIELDS:
+        if key in value:
+            _collect_script_asset_refs(value[key], label, f"{usage}.{key}", seen)
+    for key in ("all", "any"):
+        if isinstance(value.get(key), list):
+            _collect_script_asset_refs(value[key], label, f"{usage}.{key}", seen)
 
 
 def validate_script(data: dict) -> str:

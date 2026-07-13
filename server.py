@@ -722,6 +722,16 @@ def job_detail(job_id: str) -> dict | None:
     }
 
 
+def script_assets_with_urls(script_id: str) -> list[dict]:
+    rows = scripts.script_assets(script_id)
+    for row in rows:
+        image = row.get("image", "")
+        context = row.get("context_image", "")
+        row["image_url"] = f"/api/script-asset?path={quote(image, safe='')}" if image else ""
+        row["context_url"] = f"/api/script-asset?path={quote(context, safe='')}" if context else ""
+    return rows
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "AutoGameTest/0.1"
 
@@ -813,6 +823,36 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/scripts":
             return self._json({"scripts": scripts.list_scripts(),
                                "yaml_available": scripts.yaml_available()})
+        if p == "/api/script-asset":
+            full = scripts.script_asset_path(q.get("path", [""])[0])
+            if not full:
+                return self.send_error(404)
+            try:
+                with open(full, "rb") as f:
+                    data = f.read()
+            except OSError:
+                return self.send_error(404)
+            ctype = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+                ".bmp": "image/bmp",
+            }.get(os.path.splitext(full)[1].lower(), "application/octet-stream")
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        m = re.match(r"^/api/scripts/([^/]+)/assets$", p)
+        if m:
+            if not scripts.get_script(m.group(1)):
+                return self.send_error(404)
+            return self._json({"assets": script_assets_with_urls(m.group(1))})
         if p == "/api/testcases":
             return self._json({"testcases": testcases.list_testcases()})
         m = re.match(r"^/api/testcases/([^/]+)/download$", p)

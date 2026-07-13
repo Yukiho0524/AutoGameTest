@@ -18,6 +18,8 @@ let JOB_STATUS_CACHE = new Map();
 let JOB_NOTIFY_POLL_STARTED = false;
 let JOBS_SEEDED = false;
 let JOBS_LOADING = false;
+let GEN_ASSET_POLL = null;
+let LAST_GEN_SCRIPT_ID = "";
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const DEFAULT_CODEX_REASONING_EFFORT = "high";
 const DAYS = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"];
@@ -497,11 +499,130 @@ async function loadRecordingsForGen() {
 
 $("#gen-refresh").onclick = loadRecordingsForGen;
 
+function clearGenAssetPolling() {
+  if (GEN_ASSET_POLL) {
+    clearInterval(GEN_ASSET_POLL);
+    GEN_ASSET_POLL = null;
+  }
+}
+
+function showGenAssetsMessage(message) {
+  const box = $("#gen-assets");
+  if (!box) return;
+  box.hidden = false;
+  $("#gen-assets-hint").textContent = message || "";
+  $("#gen-assets-grid").innerHTML = "";
+}
+
+function hideGenAssets() {
+  const box = $("#gen-assets");
+  if (!box) return;
+  box.hidden = true;
+  $("#gen-assets-hint").textContent = "";
+  $("#gen-assets-grid").innerHTML = "";
+}
+
+async function loadScriptAssetsPreview(scriptId) {
+  if (!scriptId) return;
+  LAST_GEN_SCRIPT_ID = scriptId;
+  showGenAssetsMessage("正在載入裁切截圖...");
+  const r = await api(`/api/scripts/${encodeURIComponent(scriptId)}/assets`);
+  renderScriptAssetsPreview(scriptId, r.assets || []);
+}
+
+function renderScriptAssetsPreview(scriptId, assets) {
+  const box = $("#gen-assets");
+  const grid = $("#gen-assets-grid");
+  const hint = $("#gen-assets-hint");
+  if (!box || !grid || !hint) return;
+  box.hidden = false;
+  grid.innerHTML = "";
+  if (!assets.length) {
+    hint.textContent = `腳本 ${scriptId} 沒有找到可預覽的裁切圖。`;
+    grid.innerHTML = '<p class="hint">如果這是草稿座標腳本，可能沒有產出圖片模板。</p>';
+    return;
+  }
+  const contextCount = assets.filter(asset => asset.context_url).length;
+  hint.textContent = contextCount
+    ? `腳本 ${scriptId}，共 ${assets.length} 張，其中 ${contextCount} 張含語意截圖。下方會顯示實際比對模板。`
+    : `腳本 ${scriptId}，共 ${assets.length} 張裁切模板。`;
+  assets.forEach((asset, index) => {
+    const mainUrl = asset.context_url || asset.image_url || "";
+    const card = document.createElement("div");
+    card.className = "asset-card";
+    card.innerHTML = `
+      <div class="asset-card-title">
+        <strong>${esc(asset.label || asset.filename || `圖片 ${index + 1}`)}</strong>
+        <span class="badge">${esc(asset.usage || "")}</span>
+      </div>
+      <div class="asset-preview">
+        ${mainUrl ? `<img src="${esc(mainUrl)}" alt="裁切預覽 ${index + 1}">` : ""}
+        <span>${asset.context_url ? "語意截圖" : "裁切模板"}</span>
+      </div>
+      ${asset.context_url && asset.image_url ? `
+        <div class="asset-template">
+          <span>比對模板</span>
+          <img src="${esc(asset.image_url)}" alt="比對模板 ${index + 1}">
+        </div>` : ""}
+      <p class="asset-path">${esc(asset.image || "")}</p>`;
+    grid.appendChild(card);
+  });
+}
+
+function scriptIdFromJob(job) {
+  if (job?.script_id) return job.script_id;
+  const m = String(job?.result || "").match(/script_id=([A-Za-z0-9_-]+)/);
+  return m ? m[1] : "";
+}
+
+function watchGeneratedScriptJob(jobId) {
+  clearGenAssetPolling();
+  if (!jobId) return;
+  showGenAssetsMessage(`等待生成任務 #${jobId} 完成...`);
+  const poll = async () => {
+    try {
+      const detail = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
+      const job = detail.job || detail;
+      if (!job?.status) return;
+      if (job.status === "done") {
+        clearGenAssetPolling();
+        const scriptId = scriptIdFromJob(job);
+        loadJobs();
+        loadScripts();
+        if (scriptId) {
+          $("#gen-status").textContent = `生成完成：${scriptId}`;
+          await loadScriptAssetsPreview(scriptId);
+        } else {
+          showGenAssetsMessage("生成完成，但沒有取得 script_id；請到已生成腳本列表查看。");
+        }
+      } else if (job.status === "error") {
+        clearGenAssetPolling();
+        $("#gen-status").textContent = `生成失敗：${job.result || job.progress || ""}`;
+        showGenAssetsMessage("生成失敗，沒有裁切截圖可顯示。");
+        loadJobs();
+      } else {
+        $("#gen-assets-hint").textContent =
+          `生成中 (${job.status}) ${job.progress ? `- ${job.progress}` : ""}`;
+      }
+    } catch (e) {
+      $("#gen-assets-hint").textContent = `讀取生成任務狀態失敗：${e.message || e}`;
+    }
+  };
+  GEN_ASSET_POLL = setInterval(poll, 2000);
+  poll();
+}
+
+$("#gen-assets-refresh").onclick = () => {
+  if (LAST_GEN_SCRIPT_ID) loadScriptAssetsPreview(LAST_GEN_SCRIPT_ID);
+};
+
 $("#genscript-form").onsubmit = async (e) => {
   e.preventDefault();
   const f = e.target;
   const source = $("#gen-source").value;
   const gameId = $("#gen-game").value;
+  clearGenAssetPolling();
+  hideGenAssets();
   if (!source) { $("#gen-status").textContent = "請先選擇一段有觸控紀錄的錄影。"; return; }
   const job = await api("/api/scripts/generate", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -515,6 +636,8 @@ $("#genscript-form").onsubmit = async (e) => {
   $("#gen-status").textContent = job.spawned
     ? `已建立生成任務 #${job.id}（Codex 註解中）。完成後腳本會出現在左邊清單，進度見任務佇列。`
     : `任務 #${job.id} 未能自動啟動，請查看任務佇列。`;
+  showGenAssetsMessage("已送出生成任務，等待裁切截圖...");
+  watchGeneratedScriptJob(job.id);
   loadJobs();
 };
 
@@ -542,6 +665,7 @@ async function viewScript(id) {
   $("#script-viewer-title").textContent = `腳本內容：${r.script.name || id}`;
   $("#script-yaml").value = r.text || "";
   $("#script-viewer-status").textContent = "";
+  loadScriptAssetsPreview(id);
 }
 
 $("#script-save").onclick = async () => {
