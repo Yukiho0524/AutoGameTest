@@ -282,6 +282,96 @@ def list_testcases() -> list[dict[str, Any]]:
     return rows
 
 
+def testcase_path(name: str) -> Path | None:
+    safe = _safe_name(name)
+    path = TESTCASE_DIR / safe
+    if path.is_file() and path.suffix.lower() == ".xlsx":
+        return path
+    return None
+
+
+def read_testcase_cases(name: str, limit: int = 25) -> dict[str, Any]:
+    try:
+        import openpyxl
+    except ImportError as e:
+        raise RuntimeError("缺少 openpyxl，無法讀取 TestCase xlsx") from e
+
+    path = testcase_path(name)
+    if not path:
+        raise FileNotFoundError(f"找不到 TestCase 文件：{name}")
+    limit = max(1, min(int(limit or 25), 80))
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    try:
+        ws = wb[wb.sheetnames[0]]
+        system = ws.title
+        cases: list[dict[str, Any]] = []
+        current_item = ""
+        for row_index, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            cells = list(row or []) + [None] * 6
+            if cells[0]:
+                current_item = str(cells[0]).strip()
+            tc_text = str(cells[2] or "").strip()
+            if not tc_text:
+                continue
+            cases.append({
+                "no": len(cases) + 1,
+                "row": row_index,
+                "item": current_item,
+                "type": str(cells[1] or "").strip(),
+                "tc": tc_text,
+                "result": str(cells[3] or "").strip(),
+            })
+    finally:
+        wb.close()
+    pending = [case for case in cases if not case.get("result")]
+    selected = (pending or cases)[:limit]
+    return {
+        "name": path.name,
+        "path": str(path),
+        "system": system,
+        "total": len(cases),
+        "pending": len(pending),
+        "selected": selected,
+        "selected_count": len(selected),
+        "limit": limit,
+        "used_pending": bool(pending),
+    }
+
+
+def build_agent_task_from_testcase(name: str, game: dict,
+                                   limit: int = 25) -> dict[str, Any]:
+    meta = read_testcase_cases(name, limit=limit)
+    if not meta["selected"]:
+        raise ValueError(f"TestCase 文件沒有可執行案例：{name}")
+    lines = "\n".join(
+        f"- TC{case['no']:03d}｜{case['item'] or '未分類'}｜"
+        f"{case['type'] or '未分類'}｜{case['tc']}"
+        for case in meta["selected"]
+    )
+    scope = "未填 PASS/FAIL 的案例" if meta["used_pending"] else "全部案例"
+    game_name = game.get("name") or game.get("id") or "指定遊戲"
+    task = f"""請以 QA 測試員身份執行 TestCase 文件中的測項。
+
+TestCase 文件：{meta['name']}
+遊戲：{game_name}
+目標系統/功能：{meta['system']}
+本次範圍：{scope}，先測最多 {meta['selected_count']} / {meta['total']} 條。
+
+請先啟動或切回遊戲，導航到「{meta['system']}」相關介面，再逐條驗證下列 TestCase：
+{lines}
+
+執行規則：
+- 每條 TestCase 操作前後都要截圖判讀，不要盲點。
+- 可以用遊戲 skill、圖片記憶與目前畫面判斷入口位置。
+- 登入、付費、消費、抽卡確認、第三方授權、PVP 排位都不可代操作；遇到就停止該案例並標 N/A 或 FAIL，說明原因。
+- 對每條案例輸出：RESULT: TC編號|PASS/FAIL/N/A|看到的證據或原因。
+- 本版先把結果寫在任務詳情與 log，不回寫 Excel。
+- 所有列出的案例都有 RESULT 後，輸出 SUITE DONE 並結束任務。
+"""
+    meta["task"] = task
+    return meta
+
+
 def autopush_files(paths: list[Path], message: str) -> str:
     files = [os.path.relpath(p, ROOT) for p in paths if p and p.exists()]
     if not files:

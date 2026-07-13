@@ -1028,7 +1028,7 @@ function renderQA({ diagnostics, jobs, games, agents, scripts, testcases }) {
       "可在 QA 頁籤上傳企劃書或填本機路徑，自動生成 QA 用 xlsx。"),
   ];
   $("#qa-checklist").innerHTML = checklist.map(renderQACheck).join("");
-  renderTestcaseList(testcases);
+  renderTestcaseList(testcases, games);
 
   const recent = jobs.slice(0, 6);
   $("#qa-job-risk").innerHTML = recent.length ? recent.map(job => `
@@ -1050,19 +1050,29 @@ function renderQA({ diagnostics, jobs, games, agents, scripts, testcases }) {
   $("#qa-actions").innerHTML = actions.map(a => `<p>${esc(a)}</p>`).join("");
 }
 
-function renderTestcaseList(testcases) {
+function renderTestcaseList(testcases, games = []) {
   const box = $("#qa-testcase-list");
   if (!testcases.length) {
     box.innerHTML = '<p class="hint">尚無 TestCase 文件。</p>';
     return;
   }
+  const gameOptions = games.map(g =>
+    `<option value="${esc(g.id)}">${esc(g.name || g.id)}</option>`
+  ).join("");
   box.innerHTML = testcases.slice(0, 8).map(tc => `
     <div class="qa-testcase-row">
-      <div>
+      <div class="qa-testcase-info">
         <strong>${esc(tc.name)}</strong>
         <small>${esc(tc.mtime || "")} · ${formatBytes(tc.size)}</small>
       </div>
-      <a class="button-link" href="/api/testcases/${encodeURIComponent(tc.name)}/download">下載</a>
+      <div class="qa-testcase-actions">
+        <select class="testcase-game-select" ${games.length ? "" : "disabled"}>
+          <option value="">選遊戲</option>
+          ${gameOptions}
+        </select>
+        <button type="button" class="small testcase-run" data-name="${esc(tc.name)}" ${games.length ? "" : "disabled"}>執行</button>
+        <a class="button-link" href="/api/testcases/${encodeURIComponent(tc.name)}/download">下載</a>
+      </div>
     </div>`).join("");
 }
 
@@ -1130,6 +1140,33 @@ $("#testcase-form").onsubmit = async (e) => {
     : `已建立任務 #${job.id}，但背景執行器啟動失敗，請查看任務佇列。`;
   loadJobs();
   setTimeout(loadQA, 1200);
+};
+
+$("#qa-testcase-list").onclick = async (e) => {
+  const btn = e.target.closest(".testcase-run");
+  if (!btn) return;
+  const row = btn.closest(".qa-testcase-row");
+  const gameId = row.querySelector(".testcase-game-select")?.value || "";
+  const name = btn.dataset.name || "";
+  if (!gameId) {
+    $("#testcase-status").textContent = "請先選擇要執行測試的遊戲。";
+    return;
+  }
+  btn.disabled = true;
+  $("#testcase-status").textContent = `建立「${name}」測試任務中...`;
+  const job = await api(`/api/testcases/${encodeURIComponent(name)}/run`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ game_id: gameId, limit: 25 }),
+  });
+  btn.disabled = false;
+  if (job.error) {
+    $("#testcase-status").textContent = `無法建立測試任務：${job.error}`;
+    return;
+  }
+  $("#testcase-status").textContent = job.spawned
+    ? `已開始測試任務 #${job.id}，Agent 會進入遊戲並測前 ${job.testcase?.selected_count || 25} 條 TestCase。`
+    : `已建立測試任務 #${job.id}，但背景執行器啟動失敗，請查看任務佇列。`;
+  loadJobs();
 };
 
 $("#testcase-list-refresh").onclick = loadQA;

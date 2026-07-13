@@ -212,11 +212,18 @@ button.small { padding: 4px 10px; font-size: 12px; }
   min-height: 52px; padding: 8px 10px; border: 1px solid var(--line);
   border-radius: 8px; background: var(--panel2);
 }
+.qa-testcase-info { min-width: 0; }
 .qa-testcase-row strong {
   display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .qa-testcase-row small {
   display: block; color: var(--muted); font-size: 11px; margin-top: 2px;
+}
+.qa-testcase-actions {
+  display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
+}
+.qa-testcase-actions select {
+  min-width: 150px; height: 32px; padding: 4px 8px;
 }
 .button-link {
   flex: 0 0 auto; color: var(--text); text-decoration: none;
@@ -353,6 +360,9 @@ button.small { padding: 4px 10px; font-size: 12px; }
   .jobs-layout, .diagnostics-layout, .diagnostics-summary, .settings-layout,
   .qa-summary, .qa-layout { grid-template-columns: 1fr; }
   .qa-testcase-form { grid-template-columns: 1fr; }
+  .qa-testcase-row { align-items: stretch; flex-direction: column; }
+  .qa-testcase-actions { flex-wrap: wrap; }
+  .qa-testcase-actions select { flex: 1 1 180px; min-width: 0; }
   .job-detail, .diagnostics-side, .qa-side { position: static; }
   .perf-grid { grid-template-columns: 1fr; }
 }

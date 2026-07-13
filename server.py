@@ -225,6 +225,48 @@ def enqueue_agent_run(agent: dict, source: str = "manual",
     return job
 
 
+def enqueue_testcase_run(testcase_name: str, game_id: str,
+                         agent_id: str = "", limit: int = 25,
+                         engine: str = "codex") -> dict:
+    game = store.get_game(game_id)
+    if not game:
+        return {"ok": False, "error": f"遊戲不存在：{game_id}"}
+    if agent_id:
+        agent = store.get_agent(agent_id)
+        if not agent:
+            return {"ok": False, "error": f"Agent 不存在：{agent_id}"}
+        if agent.get("game_id") != game_id:
+            return {"ok": False, "error": "Agent 不屬於選定遊戲"}
+    else:
+        agents = store.list_agents(game_id)
+        agent_id = agents[0]["id"] if agents else ""
+    try:
+        meta = testcases.build_agent_task_from_testcase(
+            testcase_name, game, limit=limit)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    payload = {
+        "agent_id": agent_id,
+        "game_id": game_id,
+        "prompt": meta["task"],
+        "source": "testcase",
+        "testcase_name": meta["name"],
+        "testcase_system": meta["system"],
+        "testcase_total": meta["total"],
+        "testcase_selected_count": meta["selected_count"],
+        "notify_on_done": True,
+    }
+    job = store.enqueue_job("run_agent", payload)
+    job["testcase"] = {k: v for k, v in meta.items() if k != "task"}
+    job["spawned"] = spawn_runner("run_agent.py", job["id"], engine)
+    if not job["spawned"]:
+        store.update_job(
+            job["id"],
+            status="error",
+            result="無法啟動 tools/run_agent.py 背景執行器")
+    return job
+
+
 def enqueue_script_run(script_meta: dict, source: str = "manual",
                        schedule: dict | None = None,
                        allow_risk: bool = False) -> dict:
@@ -870,6 +912,24 @@ class Handler(BaseHTTPRequestHandler):
                 store.update_job(job["id"], status="error",
                                  result="無法啟動 tools/run_testgen.py")
             return self._json(job)
+        m = re.match(r"^/api/testcases/([^/]+)/run$", p)
+        if m:
+            testcase_name = os.path.basename(unquote(m.group(1)))
+            game_id = str(b.get("game_id", "")).strip()
+            agent_id = str(b.get("agent_id", "")).strip()
+            if not game_id and agent_id:
+                agent = store.get_agent(agent_id)
+                game_id = agent.get("game_id", "") if agent else ""
+            if not game_id:
+                return self._json({"ok": False, "error": "請先選擇遊戲"})
+            try:
+                limit = int(b.get("limit", 25) or 25)
+            except (TypeError, ValueError):
+                limit = 25
+            mode = (b or {}).get("engine", "codex")
+            return self._json(enqueue_testcase_run(
+                testcase_name, game_id, agent_id=agent_id,
+                limit=limit, engine=mode))
         m = re.match(r"^/api/scripts/([^/]+)/run$", p)
         if m:
             meta = scripts.get_script(m.group(1))
