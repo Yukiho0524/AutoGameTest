@@ -57,6 +57,8 @@ FRAME_STABILITY_GAP = 0.12
 FRAME_STABLE_DELTA = 8.0
 FRAME_SCENE_CHANGE_DELTA = 12.0
 FRAME_SCENE_CORRECTION_MAX_OFFSET = 1.50
+FRAME_TAP_REGION_CHANGE_DELTA = 35.0
+FRAME_TAP_REGION_CORRECTION_MAX_OFFSET = 1.00
 
 
 def extract_keyframes(source: str, taps: list[dict], out_dir: str) -> list[str]:
@@ -79,7 +81,7 @@ def extract_keyframes(source: str, taps: list[dict], out_dir: str) -> list[str]:
     os.makedirs(out_dir, exist_ok=True)
     saved = []
     for i, tp in enumerate(taps):
-        frame = _pre_tap_frame(cv2, metas, float(tp.get("t", 0) or 0))
+        frame = _pre_tap_frame(cv2, metas, tp)
         if frame is None:
             continue
         path = os.path.join(out_dir, f"tap{i:02d}.png")
@@ -195,7 +197,8 @@ def _frame_at(cv2, metas, t: float):
     return None
 
 
-def _pre_tap_frame(cv2, metas, tap_time: float):
+def _pre_tap_frame(cv2, metas, tap: dict):
+    tap_time = float(tap.get("t", 0) or 0)
     samples = []
     for offset in FRAME_PRE_TAP_OFFSETS:
         t = max(0.0, tap_time - offset)
@@ -214,6 +217,15 @@ def _pre_tap_frame(cv2, metas, tap_time: float):
         if _frame_delta(cv2, newer, older) >= FRAME_SCENE_CHANGE_DELTA:
             return older
 
+    # Android "show taps" / pressed-state effects are often local only, so the
+    # full frame still looks stable. If the tap area changes sharply, use the
+    # older side before the touch feedback appears.
+    for (_, _, newer), (older_offset, _, older) in zip(samples, samples[1:]):
+        if older_offset > FRAME_TAP_REGION_CORRECTION_MAX_OFFSET + 1e-6:
+            continue
+        if _tap_region_delta(cv2, newer, older, tap) >= FRAME_TAP_REGION_CHANGE_DELTA:
+            return older
+
     for _, t, frame in samples:
         prev = _frame_at(cv2, metas, max(0.0, t - FRAME_STABILITY_GAP))
         if prev is None or _frame_delta(cv2, prev, frame) <= FRAME_STABLE_DELTA:
@@ -230,6 +242,40 @@ def _frame_delta(cv2, a, b) -> float:
         return float(cv2.absdiff(ga, gb).mean())
     except Exception:
         return 0.0
+
+
+def _tap_region_delta(cv2, a, b, tap: dict) -> float:
+    try:
+        x, y = _tap_xy_for_frame(tap, a)
+        h, w = a.shape[:2]
+        rx = max(48, int(w * 0.055))
+        ry = max(36, int(h * 0.055))
+        x1, x2 = max(0, x - rx), min(w, x + rx)
+        y1, y2 = max(0, y - ry), min(h, y + ry)
+        if x2 <= x1 or y2 <= y1:
+            return 0.0
+        ga = cv2.cvtColor(a[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+        gb = cv2.cvtColor(b[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+        ga = cv2.resize(ga, (96, 54), interpolation=cv2.INTER_AREA)
+        gb = cv2.resize(gb, (96, 54), interpolation=cv2.INTER_AREA)
+        return float(cv2.absdiff(ga, gb).mean())
+    except Exception:
+        return 0.0
+
+
+def _tap_xy_for_frame(tap: dict, frame) -> tuple[int, int]:
+    h, w = frame.shape[:2]
+    try:
+        nx = float(tap.get("nx"))
+        ny = float(tap.get("ny"))
+        if 0.0 <= nx <= 1.0 and 0.0 <= ny <= 1.0:
+            return int(round(nx * w)), int(round(ny * h))
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(tap.get("x")), int(tap.get("y"))
+    except (TypeError, ValueError):
+        return w // 2, h // 2
 
 
 def _template_is_distinctive(cv2, crop) -> bool:
