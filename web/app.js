@@ -65,6 +65,7 @@ async function loadGames() {
     list.appendChild(div);
   });
   fillAgentGameSelect();
+  fillGenScriptGameSelect();
 }
 
 function platformLabel(p) {
@@ -366,6 +367,19 @@ function fillAgentGameSelect() {
     sel.appendChild(o);
   });
 }
+
+function fillGenScriptGameSelect() {
+  const sel = $("#gen-game");
+  if (!sel) return;
+  const current = sel.value;
+  const emulatorGames = GAMES.filter(g => g.control === "emulator");
+  sel.innerHTML = '<option value="">不指定，不自動啟動 App</option>' +
+    emulatorGames.map(g => {
+      const pkg = g.launch?.package || "未設定 package";
+      return `<option value="${esc(g.id)}">${esc(g.name || g.id)} · ${esc(pkg)}</option>`;
+    }).join("");
+  if (emulatorGames.some(g => g.id === current)) sel.value = current;
+}
 async function loadAgents() {
   const { agents } = await api("/api/agents");
   AGENTS = agents;
@@ -398,6 +412,7 @@ async function loadAgents() {
 async function loadScripts() {
   const r = await api("/api/scripts");
   SCRIPTS = r.scripts || [];
+  fillGenScriptGameSelect();
   const list = $("#script-list");
   list.innerHTML = SCRIPTS.length ? "" :
     '<p class="hint">還沒有腳本。先在「模擬器操控」錄一段操作（錄影中直接點畫面），再從右邊生成。</p>';
@@ -420,6 +435,7 @@ async function loadScripts() {
         ${riskBadge}
         ${visionBadge}
         <span class="badge">${s.n_steps} 步</span>
+        ${s.game_name ? `<span class="badge">${esc(s.game_name)}</span>` : ""}
         <span class="badge">${esc(s.emulator || "")}</span>
       </div>
       <p class="hint">${esc(s.description || "")}</p>
@@ -485,13 +501,14 @@ $("#genscript-form").onsubmit = async (e) => {
   e.preventDefault();
   const f = e.target;
   const source = $("#gen-source").value;
+  const gameId = $("#gen-game").value;
   if (!source) { $("#gen-status").textContent = "請先選擇一段有觸控紀錄的錄影。"; return; }
   const job = await api("/api/scripts/generate", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       source,
       name: f.name.value.trim(),
-      package: f.package.value.trim(),
+      game_id: gameId,
     }),
   });
   if (job.error) { $("#gen-status").textContent = `無法生成：${job.error}`; return; }

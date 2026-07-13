@@ -310,6 +310,32 @@ def enqueue_script_run(script_meta: dict, source: str = "manual",
     return job
 
 
+def resolve_script_game_launch(game_id: str) -> tuple[dict | None, str]:
+    if not game_id:
+        return {}, ""
+    game = store.get_game(game_id)
+    if not game:
+        return None, f"找不到遊戲：{game_id}"
+    if game.get("control") != "emulator":
+        return None, "腳本重放目前只支援 Android 模擬器遊戲"
+    launch = game.get("launch") if isinstance(game.get("launch"), dict) else {}
+    package = str(launch.get("package", "")).strip()
+    if not package:
+        return None, f"遊戲「{game.get('name') or game_id}」尚未設定 App package"
+    emulator = adb.normalize_emulator(launch.get("emulator") or "ldplayer")
+    try:
+        instance = int(launch.get("instance", 0) or 0)
+    except (TypeError, ValueError):
+        instance = 0
+    return {
+        "game_id": game.get("id", game_id),
+        "game_name": game.get("name", ""),
+        "package": package,
+        "serial": str(launch.get("serial", "")).strip() or adb.serial_for(instance, emulator),
+        "emulator": emulator,
+    }, ""
+
+
 def _scheduler_loop() -> None:
     while True:
         now = datetime.now()
@@ -888,12 +914,25 @@ class Handler(BaseHTTPRequestHandler):
                                    "error": "此錄影沒有 taps.json，無法生成"
                                             "（請用新版錄影功能重錄，錄影中在模擬"
                                             "器視窗或操控分頁點擊）"})
+            game_id = str(b.get("game_id", "")).strip()
+            launch_meta, launch_error = resolve_script_game_launch(game_id)
+            if launch_error:
+                return self._json({"ok": False, "error": launch_error})
+            launch_meta = launch_meta or {}
+            if not game_id:
+                launch_meta = {
+                    "package": str(b.get("package", "")).strip(),
+                    "serial": str(b.get("serial", "")).strip(),
+                    "emulator": str(b.get("emulator", "")).strip(),
+                }
             job = store.enqueue_job("genscript", {
                 "source": source,
                 "name": str(b.get("name", "")).strip(),
-                "package": str(b.get("package", "")).strip(),
-                "serial": str(b.get("serial", "")).strip(),
-                "emulator": str(b.get("emulator", "")).strip(),
+                "game_id": launch_meta.get("game_id", ""),
+                "game_name": launch_meta.get("game_name", ""),
+                "package": launch_meta.get("package", ""),
+                "serial": launch_meta.get("serial", ""),
+                "emulator": launch_meta.get("emulator", ""),
             })
             job["spawned"] = spawn_runner("run_genscript.py", job["id"])
             if not job["spawned"]:

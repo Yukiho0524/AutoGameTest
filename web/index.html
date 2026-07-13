@@ -242,8 +242,10 @@
           <label>腳本名稱（選填）
             <input name="name" placeholder="留空由 AI 命名">
           </label>
-          <label>執行前啟動的 App package（選填）
-            <input name="package" placeholder="com.example.game，留空不啟動">
+          <label>執行前啟動的遊戲（選填）
+            <select id="gen-game">
+              <option value="">不指定，不自動啟動 App</option>
+            </select>
           </label>
           <div class="actions">
             <button type="submit" class="primary">🎬 生成腳本</button>

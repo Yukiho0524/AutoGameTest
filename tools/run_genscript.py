@@ -213,7 +213,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 {template_lines}
 
 # 腳本 schema（你要輸出的格式）
-- 頂層欄位：`name`（腳本名）、`description`（這段流程在做什麼）、`defaults`（等待預設）、`steps`（動作序列）
+- 頂層欄位：`name`（腳本名）、`description`（這段流程在做什麼）、`defaults`（等待預設）、`steps`（動作序列）；系統會自動保存 `game_id/game_name/package/emulator/serial`
 - defaults 建議固定輸出：
   - `visual_timeout: 60`（tap_image/tap_scene 找模板最多等待秒數）
   - `until_timeout: 120`（until / wait_scene 最多等待秒數）
@@ -271,7 +271,7 @@ steps:
     wait_after: 2.0
 ```
 
-補充資訊：來源錄影 `{meta.get('source', '')}`；預計在 `{meta.get('emulator', 'ldplayer')}` / `{meta.get('serial', 'emulator-5554')}` 重放{('；執行前會啟動 ' + meta['package']) if meta.get('package') else ''}。"""
+補充資訊：來源錄影 `{meta.get('source', '')}`；遊戲 `{meta.get('game_name') or meta.get('game_id') or '未指定'}`；預計在 `{meta.get('emulator', 'ldplayer')}` / `{meta.get('serial', 'emulator-5554')}` 重放{('；執行前會啟動 ' + meta['package']) if meta.get('package') else ''}。"""
 
 
 def extract_script_yaml(text: str) -> dict | None:
@@ -545,6 +545,8 @@ def sanitize_generated(data: dict, taps: list[dict], meta: dict) -> tuple[dict, 
     script = {
         "name": str(data.get("name", "") or "").strip()[:80] or "未命名腳本",
         "source": meta.get("source", ""),
+        "game_id": meta.get("game_id", ""),
+        "game_name": meta.get("game_name", ""),
         "emulator": meta.get("emulator") or "ldplayer",
         "serial": meta.get("serial") or "emulator-5554",
         "package": meta.get("package", ""),
@@ -563,6 +565,7 @@ def sanitize_generated(data: dict, taps: list[dict], meta: dict) -> tuple[dict, 
 
 def generate(source: str, name: str = "", package: str = "",
              serial: str = "", emulator: str = "",
+             game_id: str = "", game_name: str = "",
              job_id: str | None = None, timeout: int = 1800,
              model: str | None = None,
              reasoning_effort: str | None = None) -> dict:
@@ -583,7 +586,9 @@ def generate(source: str, name: str = "", package: str = "",
                                          "視窗或操控分頁點擊）"})
     meta = {"source": source, "package": package,
             "serial": serial or "emulator-5554",
-            "emulator": emulator or "ldplayer"}
+            "emulator": emulator or "ldplayer",
+            "game_id": game_id,
+            "game_name": game_name}
 
     frames: list[str] = []
     templates: list[str] = []
@@ -629,7 +634,8 @@ def generate(source: str, name: str = "", package: str = "",
         # fallback：確定性骨架草稿，錄影不白費
         skeleton = scripts.build_skeleton(
             source, name=name, package=package,
-            serial=meta["serial"], emulator=meta["emulator"])
+            serial=meta["serial"], emulator=meta["emulator"],
+            game_id=game_id, game_name=game_name)
         saved = scripts.save_script(skeleton)
         annotated = False
 
@@ -672,6 +678,8 @@ def main(argv=None):
     ap.add_argument("--package", default="", help="執行前要啟動的 app package")
     ap.add_argument("--serial", default="", help="預設目標裝置")
     ap.add_argument("--emulator", default="", help="模擬器類型")
+    ap.add_argument("--game-id", default="", help="綁定遊戲 id")
+    ap.add_argument("--game-name", default="", help="綁定遊戲名稱")
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--model", default=None)
     ap.add_argument("--reasoning-effort", default=None)
@@ -680,6 +688,7 @@ def main(argv=None):
 
     source, name = args.source, args.name
     package, serial, emulator = args.package, args.serial, args.emulator
+    game_id, game_name = args.game_id, args.game_name
     if args.job:
         job = store.get_job(args.job)
         if not job:
@@ -691,13 +700,17 @@ def main(argv=None):
         package = package or p.get("package", "")
         serial = serial or p.get("serial", "")
         emulator = emulator or p.get("emulator", "")
+        game_id = game_id or p.get("game_id", "")
+        game_name = game_name or p.get("game_name", "")
 
     if not source:
         print("缺少 --source", file=sys.stderr)
         return 2
 
     result = generate(source, name=name, package=package, serial=serial,
-                      emulator=emulator, job_id=args.job,
+                      emulator=emulator,
+                      game_id=game_id, game_name=game_name,
+                      job_id=args.job,
                       timeout=args.timeout, model=args.model,
                       reasoning_effort=args.reasoning_effort)
     if result.get("ok"):

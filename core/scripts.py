@@ -8,6 +8,8 @@ Script schema:
     id: script_20260709_140000
     name: 口袋戰爭 每日流程
     source: rec_20260709_1010.mp4        # 來源錄影（相對 recordings 目錄或絕對路徑）
+    game_id: game-id                     # 選填：綁定的遊戲
+    game_name: 遊戲名稱                  # 選填：顯示用
     emulator: ldplayer
     serial: emulator-5554
     package: com.xxx                      # 選填：執行前啟動的 app
@@ -102,6 +104,8 @@ def list_scripts() -> list[dict]:
             "id": data.get("id", fn.rsplit(".", 1)[0]),
             "name": data.get("name", fn),
             "source": data.get("source", ""),
+            "game_id": data.get("game_id", ""),
+            "game_name": data.get("game_name", ""),
             "emulator": data.get("emulator", ""),
             "serial": data.get("serial", ""),
             "package": data.get("package", ""),
@@ -345,7 +349,8 @@ def _recording_row(full: str, label: str) -> dict:
 
 def build_skeleton(source_path: str, name: str = "",
                    emulator: str = "", serial: str = "",
-                   package: str = "") -> dict:
+                   package: str = "",
+                   game_id: str = "", game_name: str = "") -> dict:
     """Build a runnable draft script straight from taps.json (no AI).
 
     Timing: each step waits the real gap observed between recorded touches
@@ -395,6 +400,8 @@ def build_skeleton(source_path: str, name: str = "",
     return {
         "name": name or f"腳本 {base}",
         "source": source_path,
+        "game_id": game_id,
+        "game_name": game_name,
         "emulator": emulator or "ldplayer",
         "serial": serial or "emulator-5554",
         "package": package,
