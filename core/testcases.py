@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import html
+import json
 import os
 import re
 import shutil
@@ -18,7 +19,7 @@ TESTCASE_DIR = ROOT / "TestCase"
 INPUT_DIR = TESTCASE_DIR / "_input"
 UPLOAD_DIR = INPUT_DIR / "uploads"
 SPEC_PATH = ROOT / "TESTCASE_SPEC.md"
-SKILLS_DIR = ROOT / ".codex" / "skills"
+SYSTEM_SKILLS_DIR = ROOT / "data" / "system_skills"
 SUPPORTED_EXTS = {".docx", ".pdf", ".xlsx", ".xlsm", ".txt", ".md"}
 VALID_TYPES = {"顯示確認", "操作確認", "數值確認"}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
@@ -461,6 +462,40 @@ def _system_skill_name(game_id: str, source_name: str, system: str) -> str:
     return f"{game_slug}-system-{digest}"[:63].rstrip("-")
 
 
+def _update_system_skill_index(game_id: str, item: dict[str, Any]) -> Path:
+    game_dir = SYSTEM_SKILLS_DIR / _slugify_ascii(game_id, "game")
+    index_path = game_dir / "index.json"
+    try:
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    systems = data.get("systems")
+    if not isinstance(systems, dict):
+        systems = {}
+    systems[str(item["name"])] = {
+        "name": item["name"],
+        "game_id": item["game_id"],
+        "system": item["system"],
+        "source_doc": item["source_doc"],
+        "path": item["relative_path"],
+        "testcase_count": item["testcase_count"],
+        "updated_at": item["updated_at"],
+    }
+    data = {
+        "game_id": game_id,
+        "updated_at": item["updated_at"],
+        "systems": dict(sorted(systems.items())),
+    }
+    game_dir.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return index_path
+
+
 def write_system_skill_from_testcase(
     game: dict | None,
     source_name: str,
@@ -478,9 +513,11 @@ def write_system_skill_from_testcase(
     system_name = system or "未命名系統"
     game_name = game.get("name") or game_id
     skill_name = _system_skill_name(game_id, source_name, system_name)
-    skill_dir = SKILLS_DIR / skill_name
+    game_dir = SYSTEM_SKILLS_DIR / _slugify_ascii(game_id, "game")
+    skill_dir = game_dir / skill_name
     skill_path = skill_dir / "SKILL.md"
     created = not skill_path.exists()
+    updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     counts: dict[str, int] = {}
     samples: list[str] = []
@@ -530,7 +567,7 @@ description: {_yaml_quote(description)}
 
 - Game: {game_name} (`{game_id}`)
 - Planning doc: {source_name}
-- Generated: {datetime.now():%Y-%m-%d}
+- Generated: {updated_at[:10]}
 - TestCase count: {len(cases)}
 
 ## Functional Areas
@@ -554,6 +591,16 @@ description: {_yaml_quote(description)}
 """
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_path.write_text(body, encoding="utf-8")
+    relative_path = os.path.relpath(skill_path, ROOT).replace(os.sep, "/")
+    index_path = _update_system_skill_index(game_id, {
+        "name": skill_name,
+        "game_id": game_id,
+        "system": system_name,
+        "source_doc": source_name,
+        "relative_path": relative_path,
+        "testcase_count": len(cases),
+        "updated_at": updated_at,
+    })
     return {
         "updated": True,
         "created": created,
@@ -561,7 +608,9 @@ description: {_yaml_quote(description)}
         "system": system_name,
         "name": skill_name,
         "path": str(skill_path.resolve()),
-        "relative_path": os.path.relpath(skill_path, ROOT).replace(os.sep, "/"),
+        "relative_path": relative_path,
+        "index_path": str(index_path.resolve()),
+        "index_relative_path": os.path.relpath(index_path, ROOT).replace(os.sep, "/"),
     }
 
 
@@ -653,6 +702,8 @@ def generate_testcases(doc_path: str, run_ai, on_progress=None,
         push_paths = [xlsx] + ([doc_backup] if doc_backup else [])
         if system_skill.get("updated") and system_skill.get("path"):
             push_paths.append(Path(system_skill["path"]))
+        if system_skill.get("updated") and system_skill.get("index_path"):
+            push_paths.append(Path(system_skill["index_path"]))
         git = autopush_files(
             push_paths,
             f"[Hibari] 新增 QA TestCase {xlsx.name}",
