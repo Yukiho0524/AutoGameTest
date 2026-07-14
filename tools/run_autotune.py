@@ -155,6 +155,64 @@ def _git_status() -> str:
         return f"git status unavailable: {e}"
 
 
+def _extract_marked_json(text: str, marker: str):
+    idx = (text or "").find(marker)
+    if idx < 0:
+        return None
+    tail = text[idx + len(marker):].lstrip(" :\n\r\t")
+    if tail.startswith("```"):
+        first_newline = tail.find("\n")
+        if first_newline >= 0:
+            tail = tail[first_newline + 1:]
+        end = tail.find("```")
+        if end >= 0:
+            tail = tail[:end]
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(tail.strip())
+        return obj
+    except json.JSONDecodeError:
+        return tail.strip()
+
+
+def extract_skill_lessons(text: str) -> list[str]:
+    obj = _extract_marked_json(text or "", "AUTOGAMETEST_SKILL_LESSONS")
+    if obj is None:
+        summary = _extract_marked_json(text or "", "AUTOGAMETEST_AUTOTUNE_SUMMARY")
+        if isinstance(summary, dict):
+            obj = summary.get("skill_lessons") or summary.get("lessons")
+    if obj is None:
+        return []
+    if isinstance(obj, dict):
+        obj = obj.get("lessons") or obj.get("items") or [obj]
+    if isinstance(obj, str):
+        obj = [line for line in obj.splitlines() if line.strip()]
+    if not isinstance(obj, list):
+        return []
+    lessons = []
+    for item in obj[:12]:
+        if isinstance(item, str):
+            text = item
+        elif isinstance(item, dict):
+            text = (
+                item.get("lesson")
+                or item.get("text")
+                or item.get("note")
+                or item.get("summary")
+                or "；".join(f"{k}: {v}" for k, v in item.items() if v)
+            )
+        else:
+            continue
+        text = " ".join(str(text or "").split()).strip(" -")
+        if text and text not in lessons:
+            lessons.append(text[:700])
+    return lessons
+
+
+def extract_autotune_summary(text: str) -> dict | None:
+    obj = _extract_marked_json(text or "", "AUTOGAMETEST_AUTOTUNE_SUMMARY")
+    return obj if isinstance(obj, dict) else None
+
+
 def build_autotune_prompt(tune_job: dict, source_job: dict) -> str:
     payload = tune_job.get("payload", {}) if isinstance(tune_job, dict) else {}
     game_id = payload.get("game_id") or source_job.get("payload", {}).get("game_id", "")
@@ -178,11 +236,17 @@ def build_autotune_prompt(tune_job: dict, source_job: dict) -> str:
     skill = _read_rel(skill_path)
     agent_text = _read_rel(agent_path)
     current_status = _git_status()
-    return f"""你是 AutoGameTest 的「Agent 效能調整器」。請根據一次已完成的 Agent 執行結果與效能診斷，對專案做**最小、保守、可回滾**的調整，目標是讓同一遊戲下次判斷更快、更少重複分析。
+    return f"""你是 AutoGameTest 的「Agent 效能調整器」。請根據一次已完成的 Agent 執行結果與效能診斷，產出**最小、保守、可回滾**的知識調整建議，目標是讓同一遊戲下次判斷更快、更少重複分析。
+
+# 執行方式
+- 這個 autotune 任務可能在 read-only sandbox 中執行，這是正常狀態，不代表失敗。
+- 不要嘗試直接修改檔案、不要呼叫 shell 寫檔、不要使用 apply_patch。
+- 你只需要輸出下方指定的 `AUTOGAMETEST_*` 結構化區塊；Python runner 會負責真正落檔與合併。
+- 若環境顯示 read-only，仍請照常輸出可被 runner 套用的 `AUTOGAMETEST_SKILL_LESSONS` / `AUTOGAMETEST_VISUAL_MEMORY` / `AUTOGAMETEST_AUTOTUNE_SUMMARY`。
 
 # 絕對邊界
 - 不要操作遊戲、不跑 adb、不截圖、不登入、不購買、不抽卡、不進 PVP。
-- 不要修改通用應用程式碼，除非效能診斷明確指出是程式 bug；本任務預設只調整知識檔。
+- 不要修改通用應用程式碼，除非效能診斷明確指出是程式 bug；本任務預設只輸出知識檔調整建議。
 - 不要 git commit / git push。
 - 不要覆蓋使用者未提交修改；若檔案已有內容，只追加或小幅整理相關段落。
 - 不要根據猜測創建 fast rule。只有在 source job 已明確包含安全 `fast_rules` 或截圖 signature + 安全動作時，才可補齊安全本地規則。
@@ -200,7 +264,7 @@ def build_autotune_prompt(tune_job: dict, source_job: dict) -> str:
 - 檢查「圖片記憶候選截圖」：穩定、可辨識、未重複且未來會再次出現的畫面，請輸出 `AUTOGAMETEST_VISUAL_MEMORY`。
 - 對登入、付費、抽卡、PVP、未知高風險畫面，只能建立 `risk: "high"` / `"manual"` / `"pvp"` 等風險記憶，不要給 actions、fast_match 或 complete。
 - 對主畫面、一般選單、完成畫面、loading、已知安全彈窗，可建立 safe/low/routine 記憶；只有安全且可重複的畫面才附 actions。
-- 若沒有足夠資訊安全調整，請不要改檔，只在輸出說明原因。
+- 若沒有足夠資訊安全調整，請不要硬輸出 lesson 或圖片記憶，只在 summary 說明原因。
 
 # 遊戲與 Agent
 game_id: {game_id}
@@ -256,8 +320,16 @@ agent_name: {agent.get('name', '')}
 {_clip(agent_text, 5000) or '(missing)'}
 ```
 
-請直接做必要的最小調整。最後輸出：
-如果評估出可加入圖片記憶的截圖，請額外輸出：
+請只輸出必要的最小結構化調整。
+如果有可寫入 Skill「經驗教訓」段的可重用規則，請輸出：
+AUTOGAMETEST_SKILL_LESSONS:
+```json
+[
+  "可重用、遊戲專屬、能讓下次更快判斷的教訓；不要寫一次性流水帳。"
+]
+```
+
+如果評估出可加入圖片記憶的截圖，請輸出：
 AUTOGAMETEST_VISUAL_MEMORY:
 ```json
 [
@@ -278,8 +350,8 @@ AUTOGAMETEST_AUTOTUNE_SUMMARY:
 ```json
 {{
   "changed": true,
-  "files": ["..."],
-  "summary": "做了什麼調整",
+  "files": ["SKILL.md 或 visual_memory 會由 runner 套用"],
+  "summary": "建議 runner 套用什麼調整",
   "skipped_reason": ""
 }}
 ```
@@ -313,17 +385,26 @@ def run_autotune_job(job_id: str, engine: str = "codex",
         timeout=timeout,
         engine=engine,
         fallback=False,
-        codex_sandbox="workspace-write",
+        codex_sandbox="read-only",
         codex_model=model,
         codex_reasoning_effort=reasoning_effort,
     )
     visual_memory_merge = None
     visual_fast_rules_merge = None
+    skill_lessons_update = None
+    autotune_summary = extract_autotune_summary(result.get("output", ""))
     learned_visuals = visual_memory.extract_memory_block(result.get("output", ""))
     if game_id and learned_visuals:
         visual_memory_merge = visual_memory.merge_entries(
             game_id, learned_visuals, source=f"autotune:{source_job_id or job_id}")
         visual_fast_rules_merge = (visual_memory_merge or {}).get("fast_rules")
+    learned_lessons = extract_skill_lessons(result.get("output", ""))
+    if game_id and learned_lessons:
+        skill_lessons_update = store.append_skill_lessons(
+            game_id,
+            learned_lessons,
+            source=f"autotune:{source_job_id or job_id}",
+        )
     after = _git_status()
     elapsed = round(time.perf_counter() - started, 3)
     ok = bool(result.get("ok"))
@@ -344,6 +425,14 @@ def run_autotune_job(job_id: str, engine: str = "codex",
                 f"新增 {visual_fast_rules_merge.get('added', 0)}、"
                 f"更新 {visual_fast_rules_merge.get('updated', 0)}。"
             )
+    if skill_lessons_update:
+        summary += (
+            "\n\nSkill 經驗教訓："
+            f"追加 {skill_lessons_update.get('appended', 0)}、"
+            f"略過 {skill_lessons_update.get('skipped', 0)}。"
+        )
+    if visual_memory_merge or skill_lessons_update:
+        summary += "\n落檔由 run_autotune.py 主流程完成，不依賴子 Codex 的寫檔權限。"
     if result.get("output"):
         summary += "\n\n" + result["output"][:2500]
     store.update_job(
@@ -354,6 +443,8 @@ def run_autotune_job(job_id: str, engine: str = "codex",
         before_status=before,
         after_status=after,
         elapsed_seconds=elapsed,
+        autotune_summary=autotune_summary,
+        skill_lessons=skill_lessons_update,
         visual_memory=visual_memory_merge,
         fast_rules_from_visual_memory=visual_fast_rules_merge,
         progress=None,
@@ -364,6 +455,7 @@ def run_autotune_job(job_id: str, engine: str = "codex",
             source_job_id,
             autotune_job_id=job_id,
             autotune_status="done" if ok else "error",
+            autotune_skill_lessons=skill_lessons_update,
             autotune_visual_memory=visual_memory_merge,
             autotune_fast_rules_from_visual_memory=visual_fast_rules_merge,
         )
@@ -371,6 +463,8 @@ def run_autotune_job(job_id: str, engine: str = "codex",
         "elapsed_seconds": elapsed,
         "before_status": before,
         "after_status": after,
+        "autotune_summary": autotune_summary,
+        "skill_lessons": skill_lessons_update,
         "visual_memory": visual_memory_merge,
         "fast_rules_from_visual_memory": visual_fast_rules_merge,
     })
