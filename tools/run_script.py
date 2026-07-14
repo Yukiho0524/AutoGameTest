@@ -593,6 +593,44 @@ class ScriptRunner:
         return self._verify_until(s)
 
 
+def _resolve_replay_target(script: dict, serial: str = "",
+                           emulator: str = "") -> tuple[str, str]:
+    """Resolve the current machine's replay target for a saved script.
+
+    Scripts are portable assets. The serial saved at generation time may belong
+    to another PC (for example 127.0.0.1:5555 vs emulator-5554), so when the
+    script is bound to a game we prefer the current game launch settings.
+    Explicit CLI/API overrides still win.
+    """
+    explicit_emulator = str(emulator or "").strip()
+    explicit_serial = str(serial or "").strip()
+    game_launch = {}
+    game_id = str(script.get("game_id") or "").strip()
+    if game_id:
+        game = store.get_game(game_id) or {}
+        if isinstance(game.get("launch"), dict):
+            game_launch = game["launch"]
+
+    resolved_emulator = adb.normalize_emulator(
+        explicit_emulator
+        or game_launch.get("emulator")
+        or script.get("emulator")
+        or "ldplayer")
+    if explicit_serial:
+        return explicit_serial, resolved_emulator
+
+    if game_launch:
+        try:
+            instance = int(game_launch.get("instance", 0) or 0)
+        except (TypeError, ValueError):
+            instance = 0
+        configured_serial = str(game_launch.get("serial", "") or "").strip()
+        return configured_serial or adb.serial_for(instance, resolved_emulator), resolved_emulator
+
+    saved_serial = str(script.get("serial", "") or "").strip()
+    return saved_serial or adb.serial_for(0, resolved_emulator), resolved_emulator
+
+
 def run_script_job(script_id: str = "", job_id: str | None = None,
                    serial: str = "", emulator: str = "",
                    allow_risk: bool = False) -> dict:
@@ -602,11 +640,16 @@ def run_script_job(script_id: str = "", job_id: str | None = None,
     if not script:
         result = {"ok": False, "error": f"腳本不存在: {script_id}"}
     else:
-        runner = ScriptRunner(script, serial=serial, emulator=emulator,
+        resolved_serial, resolved_emulator = _resolve_replay_target(
+            script, serial=serial, emulator=emulator)
+        runner = ScriptRunner(script, serial=resolved_serial,
+                              emulator=resolved_emulator,
                               job_id=job_id, allow_risk=allow_risk)
         result = runner.run()
         result["script_id"] = script.get("id")
         result["script_name"] = script.get("name")
+        result["serial"] = resolved_serial
+        result["emulator"] = resolved_emulator
     if job_id:
         if result.get("ok"):
             summary = (f"[engine=script-replay] 腳本「{result.get('script_name','')}」"
@@ -650,6 +693,8 @@ def main(argv=None):
         payload = job.get("payload", {})
         script_id = script_id or payload.get("script_id", "")
         allow_risk = bool(payload.get("allow_risk"))
+        args.serial = args.serial or str(payload.get("serial", "") or "")
+        args.emulator = args.emulator or str(payload.get("emulator", "") or "")
 
     result = run_script_job(script_id=script_id, job_id=args.job,
                             serial=args.serial, emulator=args.emulator,
