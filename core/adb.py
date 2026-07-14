@@ -413,11 +413,42 @@ def keyevent(serial: str, key: str, emulator: str | None = None) -> bool:
 
 
 def launch_app(serial: str, package: str, emulator: str | None = None) -> bool:
+    return launch_app_detail(serial, package, emulator).get("ok", False)
+
+
+def launch_app_detail(serial: str, package: str,
+                      emulator: str | None = None) -> dict:
     emu = normalize_emulator(emulator or emulator_for_serial(serial))
     _ensure_connected(serial, emu)
-    rc, _, _ = _run([adb_path_for(emu), "-s", serial, "shell", "monkey", "-p", package,
-                     "-c", "android.intent.category.LAUNCHER", "1"])
-    return rc == 0
+    adb = adb_path_for(emu)
+    rc, out, err = _run([adb, "-s", serial, "shell", "monkey", "-p", package,
+                         "-c", "android.intent.category.LAUNCHER", "1"])
+    detail = {
+        "ok": rc == 0,
+        "rc": rc,
+        "stdout": str(out or "").strip()[:1000],
+        "stderr": str(err or "").strip()[:1000],
+        "serial": serial,
+        "emulator": emu,
+        "package": package,
+        "adb_path": adb,
+    }
+    if rc == 0:
+        return detail
+    pm_rc, pm_out, pm_err = _run(
+        [adb, "-s", serial, "shell", "pm", "path", package],
+        timeout=5)
+    detail["package_installed"] = pm_rc == 0 and bool(str(pm_out or "").strip())
+    detail["pm_path_stdout"] = str(pm_out or "").strip()[:1000]
+    detail["pm_path_stderr"] = str(pm_err or "").strip()[:1000]
+    res_rc, res_out, res_err = _run(
+        [adb, "-s", serial, "shell", "cmd", "package",
+         "resolve-activity", "--brief", package],
+        timeout=5)
+    detail["resolve_activity_rc"] = res_rc
+    detail["resolve_activity_stdout"] = str(res_out or "").strip()[:1000]
+    detail["resolve_activity_stderr"] = str(res_err or "").strip()[:1000]
+    return detail
 
 
 def stop_app(serial: str, package: str, emulator: str | None = None) -> bool:

@@ -103,6 +103,7 @@ class ScriptRunner:
         self.defaults = script.get("defaults") if isinstance(
             script.get("defaults"), dict) else {}
         self.last_step_skipped = False
+        self.failure_detail = ""
         if job_id:
             self.art_dir = os.path.join(ARTIFACTS_DIR, job_id)
             os.makedirs(self.art_dir, exist_ok=True)
@@ -503,9 +504,12 @@ class ScriptRunner:
             if not ok:
                 self._screenshot(f"step_{i:02d}")
                 elapsed = round(time.time() - started, 1)
+                detail = f"：{self.failure_detail}" if self.failure_detail else ""
                 return {"ok": False, "steps_done": self.steps_done,
                         "total_steps": total, "elapsed": elapsed,
-                        "error": f"step {i}（{name}）執行失敗（操作或畫面驗證未通過）"}
+                        "error": (
+                            f"step {i}（{name}）執行失敗"
+                            f"（操作或畫面驗證未通過）{detail}")}
             self.steps_done = i
             wait_after = float(s.get("wait_after", 0) or 0)
             if wait_after > 0 and not self.last_step_skipped:
@@ -533,6 +537,7 @@ class ScriptRunner:
             return False
         if self.last_step_skipped:
             return True
+        self.failure_detail = ""
         ok = False
         if action == "wait":
             time.sleep(min(float(s.get("seconds", 1) or 1), 300))
@@ -542,7 +547,11 @@ class ScriptRunner:
             if not package:
                 ok = True   # nothing to launch is not a failure
             else:
-                ok = adb.launch_app(self.serial, package, self.emulator)
+                detail = adb.launch_app_detail(
+                    self.serial, package, self.emulator)
+                ok = bool(detail.get("ok"))
+                if not ok:
+                    self.failure_detail = self._launch_failure_message(detail)
         elif action == "tap":
             x, y = self._px(s["x"], s["y"])
             ok = adb.tap(self.serial, x, y, self.emulator)
@@ -591,6 +600,26 @@ class ScriptRunner:
         if not ok:
             return False
         return self._verify_until(s)
+
+    def _launch_failure_message(self, detail: dict) -> str:
+        package = detail.get("package", "")
+        parts = [
+            f"啟動 app 失敗 package={package}",
+            f"serial={detail.get('serial', '')}",
+            f"rc={detail.get('rc')}",
+        ]
+        if detail.get("package_installed") is False:
+            parts.append("package 未安裝在此裝置")
+        resolve = str(detail.get("resolve_activity_stdout") or "").strip()
+        if resolve:
+            parts.append(f"resolve-activity={resolve}")
+        stderr = str(detail.get("stderr") or "").strip()
+        stdout = str(detail.get("stdout") or "").strip()
+        if stderr:
+            parts.append(f"stderr={stderr}")
+        elif stdout:
+            parts.append(f"stdout={stdout}")
+        return "；".join(parts)
 
 
 def _resolve_replay_target(script: dict, serial: str = "",
