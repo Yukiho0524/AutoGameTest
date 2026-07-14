@@ -296,6 +296,14 @@ def adb_ready(serial: str, emulator: str | None = None) -> bool:
     return rc == 0 and out.strip() == "1"
 
 
+def devices_text(emulator: str | None = None) -> str:
+    emu = normalize_emulator(emulator)
+    _ensure_connected(serial_for(0, emu), emu)
+    rc, out, err = _run([adb_path_for(emu), "devices"], timeout=8)
+    text = out.strip() if rc == 0 else (err.strip() or out.strip())
+    return text[:2000]
+
+
 def current_package(serial: str, emulator: str | None = None) -> str:
     emu = normalize_emulator(emulator or emulator_for_serial(serial))
     _ensure_connected(serial, emu)
@@ -322,23 +330,61 @@ def current_package(serial: str, emulator: str | None = None) -> str:
 
 
 def screenshot(serial: str, emulator: str | None = None) -> bytes | None:
+    data, _ = screenshot_with_detail(serial, emulator)
+    return data
+
+
+def screenshot_with_detail(serial: str, emulator: str | None = None) -> tuple[bytes | None, dict]:
     emu = normalize_emulator(emulator or emulator_for_serial(serial))
     adb = adb_path_for(emu)
+    detail = {
+        "emulator": emu,
+        "serial": serial,
+        "adb_path": adb,
+        "stage": "exec-out screencap",
+        "rc": None,
+        "stderr": "",
+        "stdout_bytes": 0,
+    }
     _ensure_connected(serial, emu)
-    rc, data, _ = _run([adb, "-s", serial, "exec-out", "screencap", "-p"],
-                       timeout=8, binary=True)
+    rc, data, err = _run([adb, "-s", serial, "exec-out", "screencap", "-p"],
+                         timeout=8, binary=True)
+    detail.update({
+        "rc": rc,
+        "stderr": str(err or "")[:1000],
+        "stdout_bytes": len(data or b""),
+    })
     if rc == 0 and data and data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return data
+        detail["ok"] = True
+        return data, detail
     dev = "/sdcard/_agt_cap.png"
-    rc, _, _ = _run([adb, "-s", serial, "shell", "screencap", "-p", dev],
-                    timeout=8)
+    detail["stage"] = "shell screencap"
+    rc, out, err = _run([adb, "-s", serial, "shell", "screencap", "-p", dev],
+                        timeout=8)
+    detail.update({
+        "rc": rc,
+        "stderr": str(err or "")[:1000],
+        "stdout": str(out or "")[:1000],
+    })
     if rc != 0:
-        return None
-    rc, data, _ = _run([adb, "-s", serial, "exec-out", "cat", dev],
-                       timeout=8, binary=True)
+        detail["ok"] = False
+        return None, detail
+    detail["stage"] = "pull screencap"
+    rc, data, err = _run([adb, "-s", serial, "exec-out", "cat", dev],
+                         timeout=8, binary=True)
+    detail.update({
+        "rc": rc,
+        "stderr": str(err or "")[:1000],
+        "stdout_bytes": len(data or b""),
+    })
     if rc != 0 or not data:
-        return None
-    return data if data.startswith(b"\x89PNG\r\n\x1a\n") else None
+        detail["ok"] = False
+        return None, detail
+    ok = data.startswith(b"\x89PNG\r\n\x1a\n")
+    detail["ok"] = ok
+    if not ok:
+        detail["stage"] = "invalid png data"
+    return (data if ok else None), detail
 
 
 def tap(serial: str, x: int, y: int, emulator: str | None = None) -> bool:

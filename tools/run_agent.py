@@ -600,6 +600,120 @@ def _write_png(path: str, data: bytes) -> str:
     return path
 
 
+def _fast_visual_device_detail(emulator: str, serial: str) -> dict:
+    adb_path = adb.adb_path_for(emulator)
+    detail = {
+        "emulator": emulator,
+        "serial": serial,
+        "adb_path": adb_path,
+        "adb_exists": os.path.isfile(adb_path),
+    }
+    try:
+        detail["devices"] = adb.devices_text(emulator)
+    except Exception as e:
+        detail["devices_error"] = str(e)
+    return detail
+
+
+def _prepare_fast_visual_device(game: dict, serial: str, emulator: str,
+                                package: str, job_id: str | None,
+                                mode_label: str) -> tuple[bool, dict]:
+    lc = game.get("launch", {})
+    try:
+        instance = int(lc.get("instance", 0) or 0)
+    except (TypeError, ValueError):
+        instance = 0
+    detail = _fast_visual_device_detail(emulator, serial)
+    backend_available = adb.available(emulator)
+    detail["backend_available"] = backend_available
+    if not detail.get("adb_exists"):
+        detail["reason"] = "找不到模擬器 ADB"
+        return False, detail
+
+    if job_id:
+        store.update_job(
+            job_id,
+            progress={
+                "stage": "fast_visual_preflight",
+                "message": f"{mode_label}檢查模擬器與 ADB 連線",
+                "emulator": emulator,
+                "serial": serial,
+            },
+        )
+    ready = adb.adb_ready(serial, emulator)
+    detail["ready_before_launch"] = ready
+    if not ready:
+        launched = adb.launch_instance(instance, emulator) if backend_available else False
+        detail["launch_instance"] = launched
+        wait_seconds = 60 if backend_available else 10
+        detail["ready_wait_seconds"] = wait_seconds
+        deadline = time.perf_counter() + wait_seconds
+        while time.perf_counter() < deadline:
+            time.sleep(2)
+            if adb.adb_ready(serial, emulator):
+                ready = True
+                break
+        detail["ready_after_launch"] = ready
+    if not ready:
+        detail.update(_fast_visual_device_detail(emulator, serial))
+        detail["reason"] = (
+            "模擬器未 ready 或 serial 無法連線；且啟動器不可用，無法自動啟動"
+            if not backend_available
+            else "模擬器未 ready 或 serial 無法連線"
+        )
+        return False, detail
+
+    foreground = ""
+    try:
+        foreground = adb.current_package(serial, emulator)
+    except Exception as e:
+        detail["foreground_error"] = str(e)
+    detail["foreground_before_launch"] = foreground
+    if package and foreground != package:
+        if job_id:
+            store.update_job(
+                job_id,
+                progress={
+                    "stage": "fast_visual_preflight",
+                    "message": f"{mode_label}啟動遊戲 App",
+                    "package": package,
+                },
+            )
+        launched_app = adb.launch_app(serial, package, emulator)
+        detail["launch_app"] = launched_app
+        time.sleep(5.0)
+        try:
+            detail["foreground_after_launch"] = adb.current_package(serial, emulator)
+        except Exception as e:
+            detail["foreground_after_launch_error"] = str(e)
+        if not launched_app:
+            detail["reason"] = f"遊戲 App 啟動失敗：{package}"
+            return False, detail
+    return True, detail
+
+
+def _format_fast_visual_failure(prefix: str, detail: dict) -> str:
+    parts = [prefix]
+    if detail.get("reason"):
+        parts.append(str(detail["reason"]))
+    for key, label in (
+        ("emulator", "emulator"),
+        ("serial", "serial"),
+        ("adb_path", "adb"),
+        ("adb_exists", "adb_exists"),
+        ("stage", "stage"),
+        ("rc", "rc"),
+        ("stderr", "stderr"),
+        ("devices", "devices"),
+        ("foreground_before_launch", "foreground"),
+        ("foreground_after_launch", "foreground_after_launch"),
+    ):
+        value = detail.get(key)
+        if value not in (None, "", [], {}):
+            parts.append(f"{label}={value}")
+    return "；".join(parts)[:1200]
+
+
 def build_visual_turn_prompt(game: dict, task: str, screenshot_path: str,
                              turn: int, max_turns: int,
                              state_summary: str = "",
@@ -879,9 +993,14 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
             "attempts": [],
             "reason": f"{mode_label}目前只支援 Android 模擬器 Agent",
         }
+    adb.reload_config_paths()
     lc = game.get("launch", {})
     emulator = adb.normalize_emulator(lc.get("emulator", "ldplayer"))
-    serial = lc.get("serial") or adb.serial_for(lc.get("instance", 0), emulator)
+    try:
+        instance = int(lc.get("instance", 0) or 0)
+    except (TypeError, ValueError):
+        instance = 0
+    serial = lc.get("serial") or adb.serial_for(instance, emulator)
     package = lc.get("package", "")
     artifact_dir = _visual_artifact_dir(job_id)
     attempts: list[dict] = []
@@ -892,9 +1011,25 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
     max_turns = max(1, min(60, int(max_turns or DEFAULT_VISUAL_MAX_TURNS)))
     turn_timeout = max(60, min(int(timeout or turn_timeout), int(turn_timeout)))
 
-    if package:
-        adb.launch_app(serial, package, emulator)
-        time.sleep(5.0)
+    ok_device, device_detail = _prepare_fast_visual_device(
+        game, serial, emulator, package, job_id, mode_label)
+    if not ok_device:
+        reason = _format_fast_visual_failure(f"{mode_label}啟動前檢查失敗", device_detail)
+        turns.append({
+            "turn": 0,
+            "status": "error",
+            "reason": reason,
+            "diagnostics": device_detail,
+        })
+        return {
+            "engine_used": engine_used,
+            "ok": False,
+            "output": reason,
+            "attempts": attempts,
+            "reason": reason,
+            "visual_turns": turns,
+            "artifact_dir": artifact_dir,
+        }
 
     for turn in range(1, max_turns + 1):
         started = time.perf_counter()
@@ -908,14 +1043,24 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
                     "max_turns": max_turns,
                 },
             )
-        png = adb.screenshot(serial, emulator)
+        png, screenshot_detail = adb.screenshot_with_detail(serial, emulator)
         if not png:
-            reason = "截圖失敗"
-            turns.append({"turn": turn, "status": "error", "reason": reason})
+            screenshot_detail.update({
+                "devices": device_detail.get("devices", ""),
+                "foreground_before_launch": device_detail.get("foreground_before_launch", ""),
+                "foreground_after_launch": device_detail.get("foreground_after_launch", ""),
+            })
+            reason = _format_fast_visual_failure("截圖失敗", screenshot_detail)
+            turns.append({
+                "turn": turn,
+                "status": "error",
+                "reason": reason,
+                "diagnostics": screenshot_detail,
+            })
             return {
                 "engine_used": engine_used,
                 "ok": False,
-                "output": "\n".join(outputs),
+                "output": (("\n".join(outputs) + "\n") if outputs else "") + reason,
                 "attempts": attempts,
                 "reason": reason,
                 "visual_turns": turns,
