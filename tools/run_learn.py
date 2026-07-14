@@ -77,6 +77,11 @@ def build_learn_prompt(game: dict, sources: list[str]) -> str:
 要求：
 - 若資料不足，請主動查找公開網路資料；優先官方網站、官方公告、wiki、可靠攻略。
 - 不要輸出解釋，不要包 markdown code fence，只輸出 SKILL.md 本文。
+- SKILL.md 最前面必須有 YAML frontmatter，格式為：
+  ---
+  name: {game.get('id', 'game')}
+  description: Game-specific AutoGameTest knowledge for {game.get('name', game.get('id', ''))}. Use when running, learning, debugging, or optimizing this game's AutoGameTest agent, including UI flow, safe actions, visual memory, and gameplay observations.
+  ---
 - 使用繁體中文。
 - 內容必須包含以下章節：
   # <遊戲名稱>

@@ -145,6 +145,34 @@ def delete_agent(agent_id: str) -> bool:
 
 # ---------------- skill files ----------------
 
+def ensure_skill_frontmatter(game_id: str, content: str, game: dict | None = None) -> str:
+    text = str(content or "").lstrip("\ufeff")
+    match = re.match(r"(?s)^---\s*\n(.*?)\n---\s*\n?", text)
+    if match:
+        meta = match.group(1)
+        if re.search(r"(?m)^name\s*:", meta) and re.search(r"(?m)^description\s*:", meta):
+            return text if text.endswith("\n") else text + "\n"
+
+    text = re.sub(r"(?is)^```(?:markdown)?\s*", "", text).strip()
+    text = re.sub(r"(?s)\s*```\s*$", "", text).strip()
+    game = game or get_game(game_id) or {}
+    skill_name = _slugify(game_id or game.get("id", "") or game.get("name", "game"))
+    game_name = str(game.get("name") or game_id or skill_name).strip()
+    description = (
+        f"Game-specific AutoGameTest knowledge for {game_name}. "
+        "Use when running, learning, debugging, or optimizing this game's "
+        "AutoGameTest agent, including UI flow, safe actions, visual memory, "
+        "and gameplay observations."
+    )
+    frontmatter = (
+        "---\n"
+        f"name: {skill_name}\n"
+        f"description: {json.dumps(description, ensure_ascii=False)}\n"
+        "---\n\n"
+    )
+    return frontmatter + (text + "\n" if text else "")
+
+
 def read_skill(game_id: str) -> str:
     g = get_game(game_id)
     if not g:
@@ -162,6 +190,7 @@ def write_skill(game_id: str, content: str) -> None:
         return
     path = os.path.join(ROOT, g.get("skill_path", f".codex/skills/{game_id}/SKILL.md"))
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    content = ensure_skill_frontmatter(game_id, content, g)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
 
@@ -214,6 +243,7 @@ def append_skill_lessons(game_id: str, lessons: list[str],
         content = content.rstrip() + "\n\n## 經驗教訓\n" + block
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    content = ensure_skill_frontmatter(game_id, content, g)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content if content.endswith("\n") else content + "\n")
     return {"appended": len(lines), "skipped": skipped, "path": path, "error": ""}

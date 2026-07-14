@@ -1,3 +1,7 @@
+---
+name: gget
+description: Game-specific AutoGameTest knowledge for SD Gundam G Generation Eternal. Use when running, learning, debugging, or optimizing the AutoGameTest agent for this Android emulator game, including UI flow, safe actions, visual memory, and gameplay observations.
+---
 # SD Gundam G Generation Eternal
 
 ## 遊戲概述
