@@ -44,13 +44,12 @@ AUTO_SEGMENT_MIN_STEPS = 5
 DEFAULT_SEGMENT_BATCH_SIZE = 2
 DEFAULT_VISUAL_MAX_TURNS = 12
 DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS = 180
-DEFAULT_AUTONOMOUS_MAX_TURNS = 20
 DEFAULT_AUTONOMOUS_TASK = """自主探索模式：
 1. 進入遊戲後自行觀察目前畫面，辨識主選單、活動、任務、商店、角色、關卡、設定等入口。
 2. 優先探索低風險 UI，記錄每一輪看到的畫面、可點擊入口、轉場結果與卡住點。
 3. 遇到登入、PVP、未知或不確定畫面時不要立刻停止，先回報觀察，再嘗試等待、返回上一層或探索其他低風險入口。
 4. 不代輸帳密、不按第三方授權、不購買付費商品、不開始會影響真人玩家的排位或匹配。
-5. 到達最大輪數、整理出主要 UI 地圖，或碰到必須真人決策的硬邊界時，回報本次探索摘要。"""
+5. 到達使用者設定的時間限制、整理出主要 UI 地圖，或碰到必須真人決策的硬邊界時，回報本次探索摘要。"""
 COMMON_MOBILE_CONTROLS_SKILL = ".codex/skills/mobile-game-controls/SKILL.md"
 _CREATE_NO_WINDOW = 0x08000000
 LOG_DIR = os.path.join(ROOT, "data", "logs")
@@ -715,7 +714,7 @@ def _format_fast_visual_failure(prefix: str, detail: dict) -> str:
 
 
 def build_visual_turn_prompt(game: dict, task: str, screenshot_path: str,
-                             turn: int, max_turns: int,
+                             turn: int, max_turns: int | None,
                              state_summary: str = "",
                              extra_skill_context: str = "",
                              autonomous_mode: bool = False) -> str:
@@ -728,6 +727,7 @@ def build_visual_turn_prompt(game: dict, task: str, screenshot_path: str,
     package = lc.get("package", "")
     mode_name = "自主探索模式" if autonomous_mode else "快速逐圖模式"
     task_text = (task or DEFAULT_AUTONOMOUS_TASK).strip()
+    turn_limit_text = "不限（以總時間為準）" if max_turns is None else str(max_turns)
     extra_block = (
         f"\n# QA 系統理解 Skill\n{extra_skill_context}\n"
         if extra_skill_context else ""
@@ -774,7 +774,7 @@ def build_visual_turn_prompt(game: dict, task: str, screenshot_path: str,
 {task_text}
 
 # 目前輪次與狀態
-- turn: {turn}/{max_turns}
+- turn: {turn}/{turn_limit_text}
 - 上一輪摘要：{state_summary or '無，這是第一輪或剛交接。'}
 
 # 最新截圖
@@ -980,7 +980,7 @@ AUTOGAMETEST_SKILL_LESSONS:
 def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
                          timeout: int, model: str, reasoning_effort: str,
                          extra_skill_context: str = "",
-                         max_turns: int = DEFAULT_VISUAL_MAX_TURNS,
+                         max_turns: int | None = DEFAULT_VISUAL_MAX_TURNS,
                          turn_timeout: int = DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS,
                          autonomous_mode: bool = False) -> dict:
     engine_used = "codex-autonomous-visual" if autonomous_mode else "codex-fast-visual"
@@ -1008,8 +1008,13 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
     outputs: list[str] = []
     state_summary = ""
     sandbox = "danger-full-access"
-    max_turns = max(1, min(60, int(max_turns or DEFAULT_VISUAL_MAX_TURNS)))
-    turn_timeout = max(60, min(int(timeout or turn_timeout), int(turn_timeout)))
+    total_timeout = max(60, int(timeout or 3600))
+    deadline = time.perf_counter() + total_timeout
+    timeout_limit_reason = f"達到{mode_label}時間限制 {total_timeout} 秒"
+    max_turns = None if autonomous_mode else max(
+        1, min(60, int(max_turns or DEFAULT_VISUAL_MAX_TURNS)))
+    turn_timeout = max(60, int(turn_timeout or DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS))
+    turn_timeout = min(total_timeout, turn_timeout)
 
     ok_device, device_detail = _prepare_fast_visual_device(
         game, serial, emulator, package, job_id, mode_label)
@@ -1031,16 +1036,26 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
             "artifact_dir": artifact_dir,
         }
 
-    for turn in range(1, max_turns + 1):
+    turn = 1
+    while max_turns is None or turn <= max_turns:
         started = time.perf_counter()
+        remaining_seconds = deadline - started
+        if remaining_seconds <= 1:
+            break
+        current_turn_timeout = max(1, min(turn_timeout, int(remaining_seconds)))
+        turn_limit_text = "不限" if max_turns is None else str(max_turns)
         if job_id:
             store.update_job(
                 job_id,
                 progress={
                     "stage": "fast_visual",
-                    "message": f"{mode_label}第 {turn}/{max_turns} 輪截圖判斷",
+                    "message": (
+                        f"{mode_label}第 {turn}/{turn_limit_text} 輪截圖判斷"
+                        f"（剩餘約 {int(remaining_seconds)} 秒）"
+                    ),
                     "turn": turn,
                     "max_turns": max_turns,
+                    "remaining_seconds": int(remaining_seconds),
                 },
             )
         png, screenshot_detail = adb.screenshot_with_detail(serial, emulator)
@@ -1077,7 +1092,7 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
         result = ai_runner.run_with_fallback(
             prompt,
             cwd=ROOT,
-            timeout=turn_timeout,
+            timeout=current_turn_timeout,
             engine="codex",
             fallback=False,
             codex_sandbox=sandbox,
@@ -1093,6 +1108,29 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
         elapsed = round(time.perf_counter() - started, 3)
         if not result.get("ok") or not decision:
             reason = result.get("reason") or "Codex 未回傳可解析的逐圖 JSON"
+            timed_out = any(
+                "timeout after" in str(a.get("detail") or "").lower()
+                for a in result.get("attempts", [])
+            )
+            if autonomous_mode and timed_out and time.perf_counter() >= deadline - 1:
+                turns.append({
+                    "turn": turn,
+                    "status": "timeout",
+                    "screenshot": screenshot_path,
+                    "elapsed_seconds": elapsed,
+                    "reason": timeout_limit_reason,
+                })
+                outputs.append(
+                    f"Turn {turn}: timeout - {timeout_limit_reason}\n{screenshot_path}".strip())
+                return {
+                    "engine_used": engine_used,
+                    "ok": True,
+                    "output": "\n\n".join(outputs),
+                    "attempts": attempts,
+                    "reason": timeout_limit_reason,
+                    "visual_turns": turns,
+                    "artifact_dir": artifact_dir,
+                }
             turns.append({
                 "turn": turn,
                 "status": "error",
@@ -1202,12 +1240,18 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
             f"上一輪執行 {action}，結果 {exec_detail}。"
             f"觀察：{observation[:120]}。"
             f"原因：{reason[:120]}。下一狀態：{next_state[:120]}。")
+        turn += 1
+    limit_reason = (
+        timeout_limit_reason
+        if max_turns is None
+        else f"達到{mode_label}最大輪數 {max_turns}"
+    )
     return {
         "engine_used": engine_used,
         "ok": bool(autonomous_mode),
         "output": "\n".join(outputs),
         "attempts": attempts,
-        "reason": f"達到{mode_label}最大輪數 {max_turns}",
+        "reason": limit_reason,
         "visual_turns": turns,
         "artifact_dir": artifact_dir,
     }
@@ -1223,7 +1267,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
               segment_timeout: int | None = None,
               segment_batch_size: int = DEFAULT_SEGMENT_BATCH_SIZE,
               fast_visual_mode: bool = False,
-              visual_max_turns: int = DEFAULT_VISUAL_MAX_TURNS,
+              visual_max_turns: int | None = DEFAULT_VISUAL_MAX_TURNS,
               visual_turn_timeout: int = DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS,
               autonomous_mode: bool = False,
               extra_skill_path: str = "",
@@ -1260,12 +1304,13 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
         fast_visual_mode
         or (agent or {}).get("fast_visual_mode")
         or job_payload.get("fast_visual_mode"))
-    if autonomous_mode and visual_max_turns == DEFAULT_VISUAL_MAX_TURNS and not job_payload.get("visual_max_turns"):
-        visual_max_turns = DEFAULT_AUTONOMOUS_MAX_TURNS
-    try:
-        visual_max_turns = int(job_payload.get("visual_max_turns") or visual_max_turns)
-    except (TypeError, ValueError):
-        visual_max_turns = DEFAULT_AUTONOMOUS_MAX_TURNS if autonomous_mode else DEFAULT_VISUAL_MAX_TURNS
+    if autonomous_mode:
+        visual_max_turns = None
+    else:
+        try:
+            visual_max_turns = int(job_payload.get("visual_max_turns") or visual_max_turns)
+        except (TypeError, ValueError):
+            visual_max_turns = DEFAULT_VISUAL_MAX_TURNS
     try:
         visual_turn_timeout = int(
             job_payload.get("visual_turn_timeout") or visual_turn_timeout)
@@ -1401,8 +1446,10 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
 
     if fast_visual_mode and not print_only:
         performance["mode"] = "autonomous-visual" if autonomous_mode else "fast-visual"
-        performance["segments_total"] = visual_max_turns
+        performance["segments_total"] = None if autonomous_mode else visual_max_turns
         performance["segment_timeout_seconds"] = visual_turn_timeout
+        performance["visual_limit_mode"] = "time" if autonomous_mode else "turns"
+        performance["visual_total_timeout_seconds"] = int(timeout)
         performance["visual_max_turns"] = visual_max_turns
         performance["visual_turn_timeout_seconds"] = visual_turn_timeout
         if job_id:
