@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, quote, unquote
 
-from core import store, platforms, launcher, adb, config, recorder, scripts, testcases
+from core import store, platforms, launcher, adb, config, recorder, scripts, testcases, player_reports
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 _CREATE_NO_WINDOW = 0x08000000
@@ -898,6 +898,25 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(
                 "Content-Disposition",
                 f"attachment; filename*=UTF-8''{quote(name)}",
+            )
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if p == "/api/reports/download":
+            full = player_reports.resolve_report_path(q.get("path", [""])[0])
+            if not full:
+                return self.send_error(404)
+            data = full.read_bytes()
+            self.send_response(200)
+            self.send_header(
+                "Content-Type",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header(
+                "Content-Disposition",
+                f"attachment; filename*=UTF-8''{quote(full.name)}",
             )
             self.send_header("Cache-Control", "no-store")
             self.end_headers()

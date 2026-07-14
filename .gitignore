@@ -4,6 +4,7 @@ data/jobs/
 data/logs/
 data/artifacts/
 data/recordings/
+data/reports/
 data/settings.json
 data/schedules.json
 config/local.json

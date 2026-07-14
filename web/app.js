@@ -1035,12 +1035,35 @@ async function loadJobDetail(id) {
     <span>${esc(job.created || "")}</span>`;
   $("#job-payload").textContent = formatJson(job.payload);
   $("#job-result").textContent = job.result ? String(job.result) : "(尚無結果)";
+  renderJobReportLinks(job);
   renderPerformanceAnalysis(job.performance_analysis || job.performance?.analysis);
   $("#job-performance").textContent = job.performance
     ? formatJson(job.performance)
     : "(尚無效能資料)";
   renderLog("stdout", logs.stdout);
   renderLog("stderr", logs.stderr);
+}
+
+function renderJobReportLinks(job) {
+  const box = $("#job-report-links");
+  if (!box) return;
+  const report = job.autonomous_report;
+  if (!report) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  box.hidden = false;
+  if (report.ok && report.relative_path) {
+    box.innerHTML = `
+      <span class="badge ok">自主探索報告</span>
+      <a class="button-link" href="/api/reports/download?path=${encodeURIComponent(report.relative_path)}">下載玩家回饋 Excel</a>
+      <span>${esc(report.generated_at || "")}</span>`;
+    return;
+  }
+  box.innerHTML = `
+    <span class="badge fail">報告失敗</span>
+    <span>${esc(report.error || "無法產出自主探索報告")}</span>`;
 }
 
 function renderEmptyJobDetail() {

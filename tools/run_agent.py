@@ -36,7 +36,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from core import store, adb, fast_agent, visual_memory, testcases  # noqa: E402
+from core import store, adb, fast_agent, visual_memory, testcases, player_reports  # noqa: E402
 import ai_runner  # noqa: E402
 
 DEFAULT_SEGMENT_TIMEOUT_SECONDS = 600
@@ -496,17 +496,27 @@ def _format_job_result(result: dict) -> str:
                 "\n\n[Excel 回寫失敗] "
                 f"{writeback.get('error') or writeback.get('message') or '未知錯誤'}"
             )
+    report = result.get("autonomous_report")
+    report_text = ""
+    if isinstance(report, dict):
+        if report.get("ok"):
+            report_text = (
+                "\n\n[自主探索玩家回饋 Excel] "
+                f"{report.get('relative_path') or report.get('path') or report.get('name')}"
+            )
+        elif report.get("error"):
+            report_text = f"\n\n[自主探索報告失敗] {report.get('error')}"
     if output:
         if engine == "codex-segmented" and len(output) > 2800:
-            body_limit = max(800, 3000 - len(head) - len(writeback_text) - 22)
+            body_limit = max(800, 3000 - len(head) - len(writeback_text) - len(report_text) - 22)
             return (
                 head + "\n\n...[前段分段輸出已省略]\n"
-                + output[-body_limit:] + writeback_text
+                + output[-body_limit:] + writeback_text + report_text
             )[:3000]
-        body_limit = max(800, 3000 - len(head) - len(writeback_text) - 4)
+        body_limit = max(800, 3000 - len(head) - len(writeback_text) - len(report_text) - 4)
         body = output if len(output) <= body_limit else output[:body_limit] + "\n...[輸出已截斷]"
-        return (head + "\n\n" + body + writeback_text)[:3000]
-    return (head + writeback_text)[:3000]
+        return (head + "\n\n" + body + writeback_text + report_text)[:3000]
+    return (head + writeback_text + report_text)[:3000]
 
 
 def _extract_marked_json(text: str, marker: str):
@@ -799,6 +809,7 @@ AUTOGAMETEST_VISUAL_STEP:
   "y": 200,
   "reason": "{example_reason}",
   "observation": "目前畫面看到的 UI、文字、狀態或風險",
+  "player_feedback": "以一般遊戲玩家角度，這一畫面的直覺感受、吸引力或困惑點",
   "learned": "這一輪可沉澱的遊戲知識或測試回饋",
   "next_state": "執行後預期進入的簡短狀態"
 }}
@@ -1153,6 +1164,12 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
         action = str(decision.get("action", "") or "").lower()
         reason = str(decision.get("reason", "") or "").strip()
         observation = str(decision.get("observation", "") or "").strip()
+        player_feedback = str(
+            decision.get("player_feedback")
+            or decision.get("feeling")
+            or decision.get("player_feeling")
+            or ""
+        ).strip()
         learned = str(decision.get("learned", "") or "").strip()
         next_state = str(decision.get("next_state", "") or "").strip()
         if status == "done" or action == "done":
@@ -1164,12 +1181,14 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
                 "elapsed_seconds": elapsed,
                 "reason": reason,
                 "observation": observation,
+                "player_feedback": player_feedback,
                 "learned": learned,
                 "next_state": next_state,
             })
             outputs.append(
                 f"Turn {turn}: done - {reason}"
                 + (f"\n觀察：{observation}" if observation else "")
+                + (f"\n玩家感受：{player_feedback}" if player_feedback else "")
                 + (f"\n學到：{learned}" if learned else ""))
             return {
                 "engine_used": engine_used,
@@ -1189,6 +1208,7 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
                 "elapsed_seconds": elapsed,
                 "reason": reason,
                 "observation": observation,
+                "player_feedback": player_feedback,
                 "learned": learned,
                 "next_state": next_state,
                 "decision": decision,
@@ -1196,6 +1216,7 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
             outputs.append(
                 f"Turn {turn}: stop - {reason}"
                 + (f"\n觀察：{observation}" if observation else "")
+                + (f"\n玩家感受：{player_feedback}" if player_feedback else "")
                 + (f"\n學到：{learned}" if learned else ""))
             return {
                 "engine_used": engine_used,
@@ -1215,6 +1236,7 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
             "elapsed_seconds": elapsed,
             "reason": reason,
             "observation": observation,
+            "player_feedback": player_feedback,
             "learned": learned,
             "next_state": next_state,
             "execute_detail": exec_detail,
@@ -1225,6 +1247,7 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
             f"Turn {turn}: {action or '(none)'} -> {exec_detail}; "
             f"{reason}".strip()
             + (f"\n觀察：{observation}" if observation else "")
+            + (f"\n玩家感受：{player_feedback}" if player_feedback else "")
             + (f"\n學到：{learned}" if learned else ""))
         if not ok:
             return {
@@ -1638,9 +1661,18 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
                 "traceback": traceback.format_exc(),
             }
     performance["total_seconds"] = round(time.perf_counter() - total_start, 3)
-    if performance.get("mode") != "fast-visual":
+    if performance.get("mode") not in ("fast-visual", "autonomous-visual"):
         performance["artifact_png_count"] = _count_artifact_pngs(fast_result)
     result["performance"] = performance
+
+    autonomous_report = None
+    if autonomous_mode:
+        try:
+            autonomous_report = player_reports.write_autonomous_player_report(
+                game, job_id or "manual", result, performance)
+        except Exception as e:
+            autonomous_report = {"ok": False, "error": str(e)}
+        result["autonomous_report"] = autonomous_report
 
     learned_rules = fast_agent.extract_rule_block(result.get("output", ""))
     fast_rules_merge = None
@@ -1700,6 +1732,7 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
             fast_rules_from_visual_memory=visual_fast_rules_merge,
             visual_memory=visual_memory_merge,
             skill_lessons=skill_lessons_update,
+            autonomous_report=autonomous_report,
             testcase_writeback=testcase_writeback,
             performance=performance,
             performance_analysis=performance_analysis,
@@ -1730,6 +1763,8 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
         result["visual_memory"] = visual_memory_merge
     if skill_lessons_update:
         result["skill_lessons"] = skill_lessons_update
+    if autonomous_report:
+        result["autonomous_report"] = autonomous_report
     return result
 
 
