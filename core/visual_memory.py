@@ -411,6 +411,25 @@ def format_prompt_context(game_id: str, limit: int = 20) -> str:
     images = data.get("images", [])
     if not images:
         return "# 圖片記憶\n目前沒有圖片記憶。"
+    def _rank(item: dict) -> tuple:
+        actions = item.get("actions") or []
+        risk = str(item.get("risk") or "").lower()
+        safe = 1 if risk in {"safe", "low", "routine"} else 0
+        try:
+            priority = int(item.get("priority") or 0)
+        except (TypeError, ValueError):
+            priority = 0
+        return (
+            safe,
+            1 if actions else 0,
+            priority,
+            str(item.get("updated_at") or item.get("created_at") or ""),
+        )
+    images = sorted(
+        [item for item in images if isinstance(item, dict)],
+        key=_rank,
+        reverse=True,
+    )
     lines = [
         "# 圖片記憶",
         "以下是已知遊戲畫面的截圖記憶。請用它輔助判斷 UI 狀態、可點區域與風險；不要把登入、付款、轉蛋、PVP 當成可自動化安全操作。",

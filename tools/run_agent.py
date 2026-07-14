@@ -730,6 +730,8 @@ def build_visual_turn_prompt(game: dict, task: str, screenshot_path: str,
                              autonomous_mode: bool = False) -> str:
     """Small stateless prompt for one screenshot decision."""
     skill = _clip_text(_read(game.get("skill_path", "")), 14000)
+    visual_memory_context = _clip_text(
+        visual_memory.format_prompt_context(game.get("id", ""), limit=6), 4500)
     extra_skill_context = _clip_text(extra_skill_context, 6000)
     size = _png_size(screenshot_path)
     size_text = f"{size[0]}x{size[1]}" if size else "unknown"
@@ -741,6 +743,10 @@ def build_visual_turn_prompt(game: dict, task: str, screenshot_path: str,
     extra_block = (
         f"\n# QA 系統理解 Skill\n{extra_skill_context}\n"
         if extra_skill_context else ""
+    )
+    visual_memory_block = (
+        f"\n# 圖片記憶與已知安全畫面\n{visual_memory_context}\n"
+        if visual_memory_context else ""
     )
     if autonomous_mode:
         actions = """- `tap`: 需要 `x`, `y`，使用像素座標，僅用於明顯低風險入口。
@@ -779,6 +785,7 @@ def build_visual_turn_prompt(game: dict, task: str, screenshot_path: str,
 
 # 遊戲 Skill
 {skill or '（尚無 skill，請保守判斷）'}
+{visual_memory_block}
 {extra_block}
 # 任務
 {task_text}
@@ -1142,6 +1149,27 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
                     "visual_turns": turns,
                     "artifact_dir": artifact_dir,
                 }
+            if autonomous_mode and timed_out:
+                timeout_reason = (
+                    f"第 {turn} 輪 Codex 判斷超過 {current_turn_timeout} 秒，"
+                    "未執行操作；保留截圖並繼續下一輪。"
+                )
+                turns.append({
+                    "turn": turn,
+                    "status": "timeout",
+                    "screenshot": screenshot_path,
+                    "elapsed_seconds": elapsed,
+                    "reason": timeout_reason,
+                })
+                outputs.append(
+                    f"Turn {turn}: timeout - {timeout_reason}\n{screenshot_path}".strip())
+                state_summary = (
+                    f"上一輪在 {screenshot_path} 判斷逾時，沒有執行操作；"
+                    "本輪請優先比對圖片記憶，若是已知安全教學/載入畫面，"
+                    "用最短 JSON 決策回覆。"
+                )
+                turn += 1
+                continue
             turns.append({
                 "turn": turn,
                 "status": "error",
