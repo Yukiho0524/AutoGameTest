@@ -432,6 +432,7 @@ def launch_app_detail(serial: str, package: str,
         "emulator": emu,
         "package": package,
         "adb_path": adb,
+        "method": "monkey",
     }
     if rc == 0:
         return detail
@@ -448,7 +449,30 @@ def launch_app_detail(serial: str, package: str,
     detail["resolve_activity_rc"] = res_rc
     detail["resolve_activity_stdout"] = str(res_out or "").strip()[:1000]
     detail["resolve_activity_stderr"] = str(res_err or "").strip()[:1000]
+    component = _parse_resolved_activity(str(res_out or ""))
+    if component:
+        start_rc, start_out, start_err = _run(
+            [adb, "-s", serial, "shell", "am", "start", "-n", component],
+            timeout=8)
+        detail["am_start_component"] = component
+        detail["am_start_rc"] = start_rc
+        detail["am_start_stdout"] = str(start_out or "").strip()[:1000]
+        detail["am_start_stderr"] = str(start_err or "").strip()[:1000]
+        if start_rc == 0:
+            detail["ok"] = True
+            detail["method"] = "am_start"
     return detail
+
+
+def _parse_resolved_activity(text: str) -> str:
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if not line or "/" not in line:
+            continue
+        if " " in line:
+            line = line.split()[-1]
+        return line
+    return ""
 
 
 def stop_app(serial: str, package: str, emulator: str | None = None) -> bool:
