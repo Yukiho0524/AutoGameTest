@@ -42,7 +42,7 @@ import ai_runner  # noqa: E402
 DEFAULT_SEGMENT_TIMEOUT_SECONDS = 600
 AUTO_SEGMENT_MIN_STEPS = 5
 DEFAULT_SEGMENT_BATCH_SIZE = 2
-DEFAULT_VISUAL_MAX_TURNS = 12
+DEFAULT_VISUAL_MAX_TURNS = None
 DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS = 180
 DEFAULT_AUTONOMOUS_TASK = """自主探索模式：
 1. 進入遊戲後自行觀察目前畫面，辨識主選單、活動、任務、商店、角色、關卡、設定等入口。
@@ -1029,8 +1029,10 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
     total_timeout = max(60, int(timeout or 3600))
     deadline = time.perf_counter() + total_timeout
     timeout_limit_reason = f"達到{mode_label}時間限制 {total_timeout} 秒"
-    max_turns = None if autonomous_mode else max(
-        1, min(60, int(max_turns or DEFAULT_VISUAL_MAX_TURNS)))
+    if autonomous_mode or max_turns in (None, "", 0):
+        max_turns = None
+    else:
+        max_turns = max(1, min(1000, int(max_turns)))
     turn_timeout = max(60, int(turn_timeout or DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS))
     turn_timeout = min(total_timeout, turn_timeout)
 
@@ -1358,10 +1360,14 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
     if autonomous_mode:
         visual_max_turns = None
     else:
-        try:
-            visual_max_turns = int(job_payload.get("visual_max_turns") or visual_max_turns)
-        except (TypeError, ValueError):
-            visual_max_turns = DEFAULT_VISUAL_MAX_TURNS
+        raw_visual_max_turns = job_payload.get("visual_max_turns", visual_max_turns)
+        if raw_visual_max_turns in (None, "", 0):
+            visual_max_turns = None
+        else:
+            try:
+                visual_max_turns = int(raw_visual_max_turns)
+            except (TypeError, ValueError):
+                visual_max_turns = DEFAULT_VISUAL_MAX_TURNS
     try:
         visual_turn_timeout = int(
             job_payload.get("visual_turn_timeout") or visual_turn_timeout)
@@ -1827,7 +1833,7 @@ def main(argv=None):
                     help="啟用自主探索模式：允許任務空白，AI 自行探索並回饋畫面")
     ap.add_argument("--visual-max-turns", type=int,
                     default=DEFAULT_VISUAL_MAX_TURNS,
-                    help="快速逐圖模式最多輪數，預設 12")
+                    help="快速逐圖模式最多輪數；未指定或 0 代表不限，以總 timeout 控制")
     ap.add_argument("--visual-turn-timeout", type=int,
                     default=DEFAULT_VISUAL_TURN_TIMEOUT_SECONDS,
                     help="快速逐圖模式每輪 Codex timeout 秒數，預設 180")
