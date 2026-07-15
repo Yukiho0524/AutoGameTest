@@ -1025,6 +1025,7 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
     turns: list[dict] = []
     outputs: list[str] = []
     state_summary = ""
+    consecutive_ai_errors = 0
     sandbox = "danger-full-access"
     total_timeout = max(60, int(timeout or 3600))
     deadline = time.perf_counter() + total_timeout
@@ -1172,6 +1173,31 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
                 )
                 turn += 1
                 continue
+            if autonomous_mode:
+                consecutive_ai_errors += 1
+                error_reason = (
+                    f"第 {turn} 輪 Codex 判斷失敗（rc/輸出不可解析），"
+                    f"未執行操作；連續失敗 {consecutive_ai_errors}/3。"
+                )
+                turns.append({
+                    "turn": turn,
+                    "status": "ai_error",
+                    "screenshot": screenshot_path,
+                    "elapsed_seconds": elapsed,
+                    "reason": error_reason,
+                    "detail": str(reason or "")[:1200],
+                })
+                outputs.append(
+                    f"Turn {turn}: ai_error - {error_reason}\n{screenshot_path}".strip())
+                if consecutive_ai_errors < 3 and time.perf_counter() < deadline - 10:
+                    state_summary = (
+                        f"上一輪在 {screenshot_path} Codex 判斷失敗，沒有執行操作；"
+                        "請用最短 JSON 回覆，若是 loading 或不確定畫面就 wait。"
+                    )
+                    time.sleep(2)
+                    turn += 1
+                    continue
+                reason = error_reason
             turns.append({
                 "turn": turn,
                 "status": "error",
@@ -1191,6 +1217,7 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
                 "artifact_dir": artifact_dir,
             }
         status = str(decision.get("status", "continue") or "continue").lower()
+        consecutive_ai_errors = 0
         action = str(decision.get("action", "") or "").lower()
         reason = str(decision.get("reason", "") or "").strip()
         observation = str(decision.get("observation", "") or "").strip()
