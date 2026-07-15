@@ -1505,7 +1505,8 @@ def run_agent(agent_id=None, game_id=None, task=None, job_id=None,
         performance["mode"] = "autonomous-visual" if autonomous_mode else "fast-visual"
         performance["segments_total"] = None if autonomous_mode else visual_max_turns
         performance["segment_timeout_seconds"] = visual_turn_timeout
-        performance["visual_limit_mode"] = "time" if autonomous_mode else "turns"
+        performance["visual_limit_mode"] = (
+            "time" if autonomous_mode or visual_max_turns is None else "turns")
         performance["visual_total_timeout_seconds"] = int(timeout)
         performance["visual_max_turns"] = visual_max_turns
         performance["visual_turn_timeout_seconds"] = visual_turn_timeout

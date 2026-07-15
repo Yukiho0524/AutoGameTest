@@ -75,14 +75,70 @@ def _image_candidate(path: str, source: str, detail: dict | None = None) -> dict
     return item
 
 
+def _compact_decision(decision: dict | None) -> dict:
+    if not isinstance(decision, dict):
+        return {}
+    keep = {}
+    for key in (
+        "status", "action", "x", "y", "x1", "y1", "x2", "y2", "ms",
+        "seconds", "reason", "next_state",
+    ):
+        value = decision.get(key)
+        if value not in (None, "", [], {}):
+            keep[key] = value
+    for key in ("reason", "next_state"):
+        if key in keep:
+            keep[key] = str(keep[key])[:260]
+    return keep
+
+
+def _candidate_score(item: dict) -> tuple:
+    detail_text = " ".join(
+        str(item.get(k) or "").lower()
+        for k in ("source", "status", "action", "reason", "observation",
+                  "learned", "next_state", "execute_detail")
+    )
+    decision = item.get("decision") if isinstance(item.get("decision"), dict) else {}
+    source = str(item.get("source") or "")
+    action = str(item.get("action") or decision.get("action") or "").lower()
+    status = str(item.get("status") or "").lower()
+    score = 0
+    if source == "visual_turn":
+        score += 30
+    if source.startswith("fast_rule"):
+        score += 25
+    if status == "done":
+        score += 20
+    if status in {"error", "stopped", "timeout"}:
+        score += 10
+    if action in {"tap", "swipe", "wait", "back", "launch_app"}:
+        score += 18
+    if decision.get("x") is not None and decision.get("y") is not None:
+        score += 20
+    if any(word in detail_text for word in (
+        "主畫面", "home", "title", "tap to start", "確認", "執行",
+        "領取", "完成", "complete", "任務", "關卡", "stage", "skip",
+        "略過", "獎勵", "reward", "彈窗", "dialog", "loading", "載入"
+    )):
+        score += 12
+    if any(word in detail_text for word in (
+        "登入", "授權", "付費", "購買", "儲值", "抽卡", "轉蛋",
+        "pvp", "rank", "排位", "對戰"
+    )):
+        score -= 30
+    try:
+        turn = int(item.get("turn") or 0)
+    except (TypeError, ValueError):
+        turn = 0
+    return score, turn
+
+
 def collect_visual_candidates(source_job: dict, limit: int = 18) -> list[dict]:
     """Collect existing artifact screenshots worth asking autotune to review."""
     candidates: list[dict] = []
     seen: set[str] = set()
 
     def add(path: str, source: str, detail: dict | None = None) -> None:
-        if len(candidates) >= limit:
-            return
         item = _image_candidate(path, source, detail)
         if not item:
             return
@@ -100,10 +156,12 @@ def collect_visual_candidates(source_job: dict, limit: int = 18) -> list[dict]:
             "turn": turn.get("turn"),
             "status": turn.get("status"),
             "action": turn.get("action"),
+            "execute_detail": str(turn.get("execute_detail") or "")[:160],
             "reason": str(turn.get("reason") or "")[:300],
             "observation": str(turn.get("observation") or "")[:500],
             "learned": str(turn.get("learned") or "")[:500],
             "next_state": str(turn.get("next_state") or "")[:300],
+            "decision": _compact_decision(turn.get("decision")),
         })
 
     fast_decision = source_job.get("fast_decision") or {}
@@ -129,14 +187,13 @@ def collect_visual_candidates(source_job: dict, limit: int = 18) -> list[dict]:
         full_dir = _abs(str(artifact_dir))
         if os.path.isdir(full_dir):
             for name in sorted(os.listdir(full_dir)):
-                if len(candidates) >= limit:
-                    break
                 if os.path.splitext(name)[1].lower() not in visual_memory.IMAGE_EXTS:
                     continue
                 add(os.path.join(full_dir, name), "artifact_dir", {
                     "artifact_dir": _rel(full_dir),
                 })
-    return candidates
+    candidates.sort(key=_candidate_score, reverse=True)
+    return candidates[:limit]
 
 
 def _git_status() -> str:
@@ -257,11 +314,18 @@ def build_autotune_prompt(tune_job: dict, source_job: dict) -> str:
 {json.dumps(allowed_paths, ensure_ascii=False, indent=2)}
 
 # 建議調整方向
+- 這個 autotune 是跨遊戲的持續優化迴圈：每次 Agent 跑完，都應盡量把「下次可少問 AI」的穩定知識沉澱下來。
+- 優先整理成三種可重用知識：
+  1. 畫面狀態：這張圖代表哪個 UI 狀態、如何辨識、是否安全。
+  2. 下一步動作：若畫面安全且任務仍需推進，下一個穩定動作是什麼。
+  3. 完成/停止判定：看到哪些文字或 UI 代表本任務階段完成，不要重做前面步驟。
 - 如果效能建議提到 fast layer 沒命中：在 Skill/Agent 中加入「遇到已知安全畫面要輸出 AUTOGAMETEST_FAST_RULES 或 VISUAL_MEMORY」的精煉教訓；不要憑空造座標。
 - 如果 Codex 判斷耗時很長：把可重複的完成判定、已知畫面狀態、停止條件寫進 Skill，讓下次少推理。
 - 如果分段任務後段重複確認相同畫面：寫入「畫面已符合前序步驟時直接承認完成，不退回重做」的遊戲專屬規則。
 - 如果 prompt/skill 太長：只整理該遊戲 Skill 中重複的經驗教訓，保留安全邊界。
 - 檢查「圖片記憶候選截圖」：穩定、可辨識、未重複且未來會再次出現的畫面，請輸出 `AUTOGAMETEST_VISUAL_MEMORY`。
+- 如果候選截圖帶有 `decision` 的 x/y 且該動作已在 source job 成功執行，可在 safe/low/routine 畫面中保守附上 actions；runner 會自動晉升 fast rules。
+- 對同一流程連續出現的畫面，優先保留「入口、確認、結果/完成」三類截圖，而不是把每個過場都加入記憶。
 - 對登入、付費、抽卡、PVP、未知高風險畫面，只能建立 `risk: "high"` / `"manual"` / `"pvp"` 等風險記憶，不要給 actions、fast_match 或 complete。
 - 對主畫面、一般選單、完成畫面、loading、已知安全彈窗，可建立 safe/low/routine 記憶；只有安全且可重複的畫面才附 actions。
 - 若沒有足夠資訊安全調整，請不要硬輸出 lesson 或圖片記憶，只在 summary 說明原因。
@@ -293,7 +357,8 @@ agent_name: {agent.get('name', '')}
 ```
 
 # 圖片記憶候選截圖
-以下都是 source job 已保存的截圖路徑；可用這些 `image_path` 建立 visual memory。若候選沒有可重用價值，請不要硬加。
+以下都是 source job 已保存的截圖路徑，已依可重用性排序；可用這些 `image_path` 建立 visual memory。若候選沒有可重用價值，請不要硬加。
+候選中的 `decision` 是當時 AI 對該截圖採取的動作摘要；只有確認安全、低風險、且 action 已成功推進流程時，才可轉成 actions。
 ```json
 {_clip(visual_candidates, 9000)}
 ```
@@ -325,7 +390,7 @@ agent_name: {agent.get('name', '')}
 AUTOGAMETEST_SKILL_LESSONS:
 ```json
 [
-  "可重用、遊戲專屬、能讓下次更快判斷的教訓；不要寫一次性流水帳。"
+  "可重用、遊戲專屬、能讓下次更快判斷的教訓；格式建議包含：畫面/狀態 -> 安全下一步/完成判定；不要寫一次性流水帳。"
 ]
 ```
 
@@ -340,11 +405,16 @@ AUTOGAMETEST_VISUAL_MEMORY:
     "note": "可辨識的 UI 狀態與下次如何判斷。",
     "tags": ["home", "safe"],
     "risk": "safe",
+    "fast_match": true,
+    "fast_max_distance": 2,
+    "priority": 10,
+    "max_repeats": 1,
     "regions": [{{"name": "任務入口", "x": 1000, "y": 620, "w": 120, "h": 80, "note": "安全入口"}}],
     "actions": [{{"type": "tap", "x": 1000, "y": 620, "wait": 0.8, "note": "打開任務"}}]
   }}
 ]
 ```
+若畫面只適合辨識而不適合自動操作，請不要附 actions；若畫面代表本階段完成，可設定 `"complete": true`；若畫面需交回 AI 深判，可設定 `"handoff": true`。
 
 AUTOGAMETEST_AUTOTUNE_SUMMARY:
 ```json
