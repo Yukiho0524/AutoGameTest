@@ -65,6 +65,12 @@ FRAME_TAP_REGION_CHANGE_DELTA = 35.0
 FRAME_TAP_REGION_CORRECTION_MAX_OFFSET = 1.00
 CONTEXT_CROP_HALF_W_RATIO = 0.16
 CONTEXT_CROP_HALF_H_RATIO = 0.13
+REVIEW_CROP_HALF_W_RATIO = 0.18
+REVIEW_CROP_HALF_H_RATIO = 0.16
+REVIEW_MIN_FULL_W = 1280
+REVIEW_MAX_FULL_W = 1680
+REVIEW_MIN_ZOOM_W = 560
+REVIEW_MIN_ZOOM_H = 380
 
 
 def extract_keyframes(source: str, taps: list[dict], out_dir: str) -> list[str]:
@@ -156,6 +162,55 @@ def extract_touch_templates(frames: list[str], taps: list[dict],
     return saved
 
 
+def build_review_keyframes(frames: list[str], taps: list[dict],
+                           out_dir: str) -> list[str]:
+    """Create AI-readable tap review images without touching raw templates."""
+    try:
+        import cv2  # noqa: PLC0415
+        import numpy as np  # noqa: PLC0415
+    except ImportError:
+        return frames
+    if not frames:
+        return []
+    os.makedirs(out_dir, exist_ok=True)
+    saved: list[str] = []
+    for frame_path in frames:
+        idx = _tap_index_from_frame(frame_path)
+        if idx < 0 or idx >= len(taps):
+            continue
+        frame = cv2.imread(frame_path)
+        if frame is None:
+            continue
+        tap = taps[idx]
+        h, w = frame.shape[:2]
+        cx, cy = _tap_xy_for_frame(tap, frame)
+        full = _draw_tap_marker(cv2, frame.copy(), cx, cy, idx, tap)
+        full = _resize_between(cv2, full, REVIEW_MIN_FULL_W, REVIEW_MAX_FULL_W)
+        full = _add_review_label(
+            cv2, full,
+            f"tap[{idx:02d}] full screen target marker "
+            f"({_coord_label(tap.get('nx'))},{_coord_label(tap.get('ny'))})")
+
+        half_w = max(140, min(360, int(w * REVIEW_CROP_HALF_W_RATIO)))
+        half_h = max(100, min(260, int(h * REVIEW_CROP_HALF_H_RATIO)))
+        x1, y1, x2, y2 = _crop_bounds(w, h, cx, cy, half_w, half_h)
+        crop = frame[y1:y2, x1:x2].copy()
+        crop = _draw_tap_marker(cv2, crop, cx - x1, cy - y1, idx, tap)
+        crop = _resize_at_least(cv2, crop, REVIEW_MIN_ZOOM_W, REVIEW_MIN_ZOOM_H)
+        crop = _add_review_label(cv2, crop, "tap target zoom / local context")
+
+        canvas_h = max(full.shape[0], crop.shape[0])
+        canvas_w = full.shape[1] + crop.shape[1] + 16
+        canvas = np.full((canvas_h, canvas_w, 3), 245, dtype=np.uint8)
+        canvas[0:full.shape[0], 0:full.shape[1]] = full
+        xoff = full.shape[1] + 16
+        canvas[0:crop.shape[0], xoff:xoff + crop.shape[1]] = crop
+        path = os.path.join(out_dir, f"tap{idx:02d}_review.png")
+        if cv2.imwrite(path, canvas):
+            saved.append(path)
+    return saved or frames
+
+
 def _crop_bounds(width: int, height: int, cx: int, cy: int,
                  half_w: int, half_h: int) -> tuple[int, int, int, int]:
     x1, x2 = max(0, cx - half_w), min(width, cx + half_w)
@@ -171,10 +226,85 @@ def _write_context_crop(cv2, frame, idx: int, cx: int, cy: int,
     x1, y1, x2, y2 = _crop_bounds(w, h, cx, cy, half_w, half_h)
     if x2 - x1 < 12 or y2 - y1 < 12:
         return ""
+    crop = frame[y1:y2, x1:x2].copy()
+    crop = _draw_tap_marker(cv2, crop, cx - x1, cy - y1, idx, {})
+    crop = _resize_at_least(cv2, crop, 420, 280)
+    crop = _add_review_label(cv2, crop, f"tap[{idx:02d}] context crop")
     path = os.path.join(context_dir, f"tap{idx:02d}_context.png")
-    if cv2.imwrite(path, frame[y1:y2, x1:x2]):
+    if cv2.imwrite(path, crop):
         return _relative_path(path)
     return ""
+
+
+def _draw_tap_marker(cv2, image, cx: int, cy: int, idx: int, tap: dict):
+    h, w = image.shape[:2]
+    cx = max(0, min(w - 1, int(cx)))
+    cy = max(0, min(h - 1, int(cy)))
+    radius = max(18, min(42, int(min(w, h) * 0.04)))
+    # Black underlay keeps the marker visible on bright and dark empty areas.
+    cv2.line(image, (cx, 0), (cx, h - 1), (0, 0, 0), 5, cv2.LINE_AA)
+    cv2.line(image, (0, cy), (w - 1, cy), (0, 0, 0), 5, cv2.LINE_AA)
+    cv2.circle(image, (cx, cy), radius, (0, 0, 0), 5, cv2.LINE_AA)
+    cv2.line(image, (cx, 0), (cx, h - 1), (0, 0, 255), 2, cv2.LINE_AA)
+    cv2.line(image, (0, cy), (w - 1, cy), (0, 0, 255), 2, cv2.LINE_AA)
+    cv2.circle(image, (cx, cy), radius, (0, 0, 255), 3, cv2.LINE_AA)
+    cv2.circle(image, (cx, cy), 4, (255, 255, 255), -1, cv2.LINE_AA)
+    try:
+        text = f"tap[{idx:02d}] {float(tap.get('nx')):.4f},{float(tap.get('ny')):.4f}"
+    except (TypeError, ValueError):
+        text = f"tap[{idx:02d}]"
+    tx = min(max(8, cx + 12), max(8, w - 260))
+    ty = min(max(28, cy - 12), max(28, h - 12))
+    cv2.putText(image, text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX,
+                0.65, (0, 0, 0), 4, cv2.LINE_AA)
+    cv2.putText(image, text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX,
+                0.65, (255, 255, 255), 2, cv2.LINE_AA)
+    return image
+
+
+def _coord_label(value) -> str:
+    try:
+        return f"{float(value):.4f}"
+    except (TypeError, ValueError):
+        return "?"
+
+
+def _add_review_label(cv2, image, text: str):
+    h, w = image.shape[:2]
+    top = 34
+    out = cv2.copyMakeBorder(
+        image, top, 0, 0, 0, cv2.BORDER_CONSTANT, value=(28, 31, 38))
+    cv2.putText(out, text[:96], (10, 23), cv2.FONT_HERSHEY_SIMPLEX,
+                0.62, (255, 255, 255), 2, cv2.LINE_AA)
+    return out
+
+
+def _resize_between(cv2, image, min_w: int, max_w: int):
+    h, w = image.shape[:2]
+    if w <= 0:
+        return image
+    scale = 1.0
+    if w < min_w:
+        scale = min_w / w
+    elif w > max_w:
+        scale = max_w / w
+    if abs(scale - 1.0) < 0.01:
+        return image
+    interp = cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA
+    return cv2.resize(image, (int(w * scale), int(h * scale)),
+                      interpolation=interp)
+
+
+def _resize_at_least(cv2, image, min_w: int, min_h: int):
+    h, w = image.shape[:2]
+    if w <= 0 or h <= 0:
+        return image
+    scale = max(min_w / w, min_h / h, 1.0)
+    scale = min(scale, 4.0)
+    if abs(scale - 1.0) < 0.01:
+        return image
+    return cv2.resize(image, (int(w * scale), int(h * scale)),
+                      interpolation=cv2.INTER_CUBIC)
 
 
 def _tap_index_from_frame(path: str) -> int:
@@ -359,7 +489,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
                             templates: list[dict],
                             meta: dict) -> str:
     frame_lines = "\n".join(
-        f"- taps[{_tap_index_from_frame(p)}] 觸控前畫面：{p}"
+        f"- taps[{_tap_index_from_frame(p)}] 觸控前 review 圖：{p}"
         for p in frames) or "（無關鍵幀可用，請依 taps 的時間與座標推理）"
     template_lines = "\n".join(
         f"- taps[{t.get('tap_index')}] Airtest-like Template："
@@ -377,13 +507,13 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 {json.dumps(taps, ensure_ascii=False, indent=1)}
 ```
 
-# 每次觸控前的畫面截圖（已盡量取點擊前一幀/穩定前置幀；用你的工具開圖檢視，理解每一步在點什麼）
+# 每次觸控前的畫面 review 圖（已盡量取點擊前一幀/穩定前置幀；用你的工具開圖檢視，理解每一步在點什麼）
 {frame_lines}
 
 # 已裁切的按鈕/點擊模板（用於 tap_image / tap_scene）
 {template_lines}
 
-說明：`image` 是執行時用來比對的精準小模板；`context_image` 是較大的語意預覽圖，只用來看清完整按鈕/圖示與周圍 UI，不要把 `context_image` 填進 YAML 的 image/template。
+說明：review 圖與 `context_image` 內的紅色準星/十字線是系統後加的點擊位置標記，不是遊戲 UI；左側是全畫面位置，右側或 context 是點擊區域放大圖。若使用者點的是全畫面任一處空白，也要依標記位置判斷這是「空白點擊、等待中的無效點擊、或指定空白區域關閉/前進」。`image` 是執行時用來比對的精準小模板；`context_image` 是較大的語意預覽圖，只用來看清完整按鈕/圖示與周圍 UI，不要把 `context_image` 填進 YAML 的 image/template。
 
 # 腳本 schema（你要輸出的格式）
 - 頂層欄位：`name`（腳本名）、`description`（這段流程在做什麼）、`defaults`（等待預設）、`steps`（動作序列）；系統會自動保存 `game_id/game_name/package/emulator/serial`
@@ -419,7 +549,7 @@ def build_generation_prompt(taps: list[dict], frames: list[str],
 9. 座標鐵則：所有 x/y/x1/y1/x2/y2 一律照抄 taps.json 的正規化值，禁止修改或發明座標。
 10. 關鍵幀與模板代表「按下前」的畫面；若截圖看起來已經是按下後結果，優先把該 tap 視為時間軸偏移/無效點，不要用它當前一步的 `until` 或穩定模板。
 11. 若某一步是可選畫面、彈窗、活動入口、廣告、教學提示、或已可能被前一步處理掉，請加 `on_timeout: skip`；執行時該圖片 timeout 找不到會跳下一步繼續找下一張。關鍵流程、付費/抽取確認、不可跳過的主路徑不要加。
-12. 若小模板看不出完整樣貌，請打開同一列的 `context_image` 或該 tap 的觸控前畫面來理解語意；輸出的 YAML 仍使用 `image` 小模板路徑。
+12. 若小模板看不出完整樣貌，請打開同一列的 `context_image` 或該 tap 的觸控前 review 圖來理解語意；輸出的 YAML 仍使用 `image` 小模板路徑。
 13. 若連續 taps 的時間差很短且畫面沒有明顯轉場，視為快速連點/雙擊/連續確認；不要插入 `wait_scene` 或長 `until`，也不要把後一個 tap 的關鍵幀解讀成上一個 tap 前的畫面。
 
 # 輸出格式（最終回覆務必包含此區塊，區塊內只放 YAML）
@@ -949,6 +1079,7 @@ def generate(source: str, name: str = "", package: str = "",
             "game_name": game_name}
 
     frames: list[str] = []
+    review_frames: list[str] = []
     templates: list[dict] = []
     if job_id:
         progress("從影片抽取每步觸控前的關鍵幀…")
@@ -957,14 +1088,18 @@ def generate(source: str, name: str = "", package: str = "",
             source, taps, os.path.join(asset_dir, "frames"))
         templates = extract_touch_templates(
             frames, taps, os.path.join(asset_dir, "templates"))
+        review_frames = build_review_keyframes(
+            frames, taps, os.path.join(asset_dir, "reviews"))
     context_count = sum(1 for t in templates if t.get("context_image"))
     progress(f"共 {len(taps)} 次觸控、{len(frames)} 張關鍵幀、"
-             f"{len(templates)} 張模板、{context_count} 張語意圖，"
+             f"{len(review_frames)} 張標註圖、{len(templates)} 張模板、"
+             f"{context_count} 張語意圖，"
              "交給 Codex 完整生成腳本…")
 
     generated = None
     detail = ""
-    prompt = build_generation_prompt(taps, frames, templates, meta)
+    prompt = build_generation_prompt(
+        taps, review_frames or frames, templates, meta)
     try:
         result = ai_runner.run_with_fallback(
             prompt, cwd=ROOT, timeout=timeout, engine="codex",
@@ -1008,6 +1143,7 @@ def generate(source: str, name: str = "", package: str = "",
         "annotated": annotated,
         "fallback_kind": fallback_kind,
         "frames": len(frames),
+        "review_frames": len(review_frames),
         "templates": len(templates),
         "detail": "" if annotated else f"以{fallback_kind or '草稿'}儲存（{detail or 'Codex 未產出'}）",
     })
