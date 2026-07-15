@@ -388,11 +388,40 @@ def screenshot_with_detail(serial: str, emulator: str | None = None) -> tuple[by
 
 
 def tap(serial: str, x: int, y: int, emulator: str | None = None) -> bool:
+    return tap_detail(serial, x, y, emulator).get("ok", False)
+
+
+def tap_detail(serial: str, x: int, y: int,
+               emulator: str | None = None) -> dict:
     emu = normalize_emulator(emulator or emulator_for_serial(serial))
     _ensure_connected(serial, emu)
-    rc, _, _ = _run([adb_path_for(emu), "-s", serial, "shell", "input", "tap",
-                     str(x), str(y)])
-    return rc == 0
+    adb = adb_path_for(emu)
+    rc, out, err = _run([adb, "-s", serial, "shell", "input", "tap",
+                         str(x), str(y)])
+    detail = {
+        "ok": rc == 0,
+        "rc": rc,
+        "stdout": str(out or "").strip()[:1000],
+        "stderr": str(err or "").strip()[:1000],
+        "serial": serial,
+        "emulator": emu,
+        "adb_path": adb,
+        "x": x,
+        "y": y,
+        "method": "input_tap",
+    }
+    if rc == 0:
+        return detail
+    swipe_rc, swipe_out, swipe_err = _run(
+        [adb, "-s", serial, "shell", "input", "swipe",
+         str(x), str(y), str(x), str(y), "80"])
+    detail["swipe_fallback_rc"] = swipe_rc
+    detail["swipe_fallback_stdout"] = str(swipe_out or "").strip()[:1000]
+    detail["swipe_fallback_stderr"] = str(swipe_err or "").strip()[:1000]
+    if swipe_rc == 0:
+        detail["ok"] = True
+        detail["method"] = "input_swipe_tap"
+    return detail
 
 
 def swipe(serial: str, x1: int, y1: int, x2: int, y2: int, ms: int = 300,

@@ -466,7 +466,10 @@ class ScriptRunner:
         px = max(0, min(self.width - 1, px))
         py = max(0, min(self.height - 1, py))
         self._progress(f"執行點擊：({px},{py})")
-        return adb.tap(self.serial, px, py, self.emulator)
+        detail = adb.tap_detail(self.serial, px, py, self.emulator)
+        if not detail.get("ok"):
+            self.failure_detail = self._tap_failure_message(detail)
+        return bool(detail.get("ok"))
 
     # ---- run ----
     def run(self) -> dict:
@@ -554,7 +557,10 @@ class ScriptRunner:
                     self.failure_detail = self._launch_failure_message(detail)
         elif action == "tap":
             x, y = self._px(s["x"], s["y"])
-            ok = adb.tap(self.serial, x, y, self.emulator)
+            detail = adb.tap_detail(self.serial, x, y, self.emulator)
+            ok = bool(detail.get("ok"))
+            if not ok:
+                self.failure_detail = self._tap_failure_message(detail)
         elif action == "tap_image":
             match = self._locate_template(s)
             if not match.get("found"):
@@ -576,7 +582,10 @@ class ScriptRunner:
                 ok = self._tap_from_match(match, s)
             else:
                 x, y = self._px(s["x"], s["y"])
-                ok = adb.tap(self.serial, x, y, self.emulator)
+                detail = adb.tap_detail(self.serial, x, y, self.emulator)
+                ok = bool(detail.get("ok"))
+                if not ok:
+                    self.failure_detail = self._tap_failure_message(detail)
         elif action == "wait_scene":
             if s.get("image") or s.get("template"):
                 ok = self._wait_visual(s, "wait_scene", _safe_float(
@@ -600,6 +609,28 @@ class ScriptRunner:
         if not ok:
             return False
         return self._verify_until(s)
+
+    def _tap_failure_message(self, detail: dict) -> str:
+        parts = [
+            f"點擊失敗 ({detail.get('x')},{detail.get('y')})",
+            f"serial={detail.get('serial', '')}",
+            f"rc={detail.get('rc')}",
+        ]
+        stderr = str(detail.get("stderr") or "").strip()
+        stdout = str(detail.get("stdout") or "").strip()
+        if stderr:
+            parts.append(f"stderr={stderr}")
+        elif stdout:
+            parts.append(f"stdout={stdout}")
+        if "swipe_fallback_rc" in detail:
+            parts.append(f"swipe_fallback_rc={detail.get('swipe_fallback_rc')}")
+            fallback_err = str(detail.get("swipe_fallback_stderr") or "").strip()
+            fallback_out = str(detail.get("swipe_fallback_stdout") or "").strip()
+            if fallback_err:
+                parts.append(f"swipe_stderr={fallback_err}")
+            elif fallback_out:
+                parts.append(f"swipe_stdout={fallback_out}")
+        return "；".join(parts)
 
     def _launch_failure_message(self, detail: dict) -> str:
         package = detail.get("package", "")
