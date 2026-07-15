@@ -249,6 +249,50 @@ def append_skill_lessons(game_id: str, lessons: list[str],
     return {"appended": len(lines), "skipped": skipped, "path": path, "error": ""}
 
 
+def upsert_skill_section(game_id: str, heading: str, body: str,
+                         source: str = "run_agent") -> dict:
+    g = get_game(game_id)
+    if not g:
+        return {"updated": False, "path": "", "error": "game not found"}
+    heading = re.sub(r"\s+", " ", str(heading or "")).strip("# \t\r\n")
+    body = str(body or "").strip()
+    if not heading or not body:
+        return {"updated": False, "path": "", "error": ""}
+
+    path = os.path.join(ROOT, g.get("skill_path", f".codex/skills/{game_id}/SKILL.md"))
+    content = ""
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    if not content.strip():
+        content = f"# {g.get('name') or game_id}\n"
+
+    date_tag = date.today().isoformat()
+    section = (
+        f"## {heading}\n\n"
+        f"> 最後更新：{date_tag} [{source}]\n\n"
+        f"{body.rstrip()}\n"
+    )
+    pattern = re.compile(
+        rf"(?ms)^##\s*{re.escape(heading)}\s*$.*?(?=^##\s+|\Z)")
+    if pattern.search(content):
+        content = pattern.sub(section.rstrip() + "\n", content)
+    else:
+        lesson_match = re.search(r"(?m)^##\s*經驗教訓\s*$", content)
+        if lesson_match:
+            before = content[:lesson_match.start()].rstrip()
+            after = content[lesson_match.start():].lstrip("\n")
+            content = before + "\n\n" + section + "\n" + after
+        else:
+            content = content.rstrip() + "\n\n" + section
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    content = ensure_skill_frontmatter(game_id, content, g)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content if content.endswith("\n") else content + "\n")
+    return {"updated": True, "path": path, "heading": heading, "error": ""}
+
+
 # ---------------- jobs ----------------
 # Learning a game and running an agent require AI cognition. The UI enqueues a
 # job file, then a Codex-backed runner processes it and marks it done.

@@ -196,6 +196,37 @@ def collect_visual_candidates(source_job: dict, limit: int = 18) -> list[dict]:
     return candidates[:limit]
 
 
+def _short_text(value, limit: int = 200) -> str:
+    text = " ".join(str(value or "").split())
+    return text[:limit]
+
+
+def collect_turn_flow_summary(source_job: dict, limit: int = 80) -> list[dict]:
+    performance = source_job.get("performance") or {}
+    turns = performance.get("visual_turns") or []
+    rows: list[dict] = []
+    if not isinstance(turns, list):
+        return rows
+    for turn in turns[:limit]:
+        if not isinstance(turn, dict):
+            continue
+        decision = turn.get("decision") if isinstance(turn.get("decision"), dict) else {}
+        rows.append({
+            "turn": turn.get("turn"),
+            "status": turn.get("status"),
+            "action": turn.get("action") or decision.get("action"),
+            "x": decision.get("x"),
+            "y": decision.get("y"),
+            "reason": _short_text(turn.get("reason") or decision.get("reason"), 180),
+            "observation": _short_text(
+                turn.get("observation") or decision.get("observation"), 220),
+            "learned": _short_text(turn.get("learned") or decision.get("learned"), 220),
+            "next_state": _short_text(
+                turn.get("next_state") or decision.get("next_state"), 160),
+        })
+    return rows
+
+
 def _git_status() -> str:
     try:
         proc = subprocess.run(
@@ -270,6 +301,58 @@ def extract_autotune_summary(text: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
+def extract_game_understanding(text: str) -> dict | None:
+    obj = _extract_marked_json(text or "", "AUTOGAMETEST_GAME_UNDERSTANDING")
+    return obj if isinstance(obj, dict) else None
+
+
+def _list_lines(title: str, values) -> list[str]:
+    if not values:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list):
+        return []
+    lines = [f"### {title}", ""]
+    for item in values[:12]:
+        if isinstance(item, str):
+            text = item
+        elif isinstance(item, dict):
+            name = item.get("name") or item.get("title") or item.get("state") or ""
+            detail = (
+                item.get("detail")
+                or item.get("note")
+                or item.get("next")
+                or item.get("rule")
+                or item.get("summary")
+                or ""
+            )
+            text = f"{name}: {detail}" if name and detail else (name or detail)
+        else:
+            continue
+        text = " ".join(str(text or "").split()).strip(" -")
+        if text:
+            lines.append(f"- {text[:500]}")
+    lines.append("")
+    return lines
+
+
+def format_game_understanding(data: dict) -> str:
+    lines: list[str] = []
+    overview = str(data.get("overview") or data.get("summary") or "").strip()
+    if overview:
+        lines.extend(["### 核心理解", "", overview[:1200], ""])
+    lines.extend(_list_lines("主線與新手流程", data.get("mainline_flow") or data.get("flow")))
+    lines.extend(_list_lines("UI 地圖與入口", data.get("ui_map") or data.get("screens")))
+    lines.extend(_list_lines("核心機制", data.get("mechanics")))
+    lines.extend(_list_lines("安全操作策略", data.get("safe_strategies") or data.get("safe_actions")))
+    lines.extend(_list_lines("風險與停止條件", data.get("risks") or data.get("stop_conditions")))
+    lines.extend(_list_lines("已知卡點與處理", data.get("frictions") or data.get("stuck_points")))
+    lines.extend(_list_lines("完成判定", data.get("completion_signals") or data.get("done_signals")))
+    body = "\n".join(lines).strip()
+    return body[:6000]
+
+
 def build_autotune_prompt(tune_job: dict, source_job: dict) -> str:
     payload = tune_job.get("payload", {}) if isinstance(tune_job, dict) else {}
     game_id = payload.get("game_id") or source_job.get("payload", {}).get("game_id", "")
@@ -289,17 +372,18 @@ def build_autotune_prompt(tune_job: dict, source_job: dict) -> str:
     fast_decision = source_job.get("fast_decision") or {}
     result = source_job.get("result") or ""
     visual_candidates = collect_visual_candidates(source_job)
+    turn_flow = collect_turn_flow_summary(source_job)
     current_visual_memory = visual_memory.summary(game_id, limit=12)
     skill = _read_rel(skill_path)
     agent_text = _read_rel(agent_path)
     current_status = _git_status()
-    return f"""你是 AutoGameTest 的「Agent 效能調整器」。請根據一次已完成的 Agent 執行結果與效能診斷，產出**最小、保守、可回滾**的知識調整建議，目標是讓同一遊戲下次判斷更快、更少重複分析。
+    return f"""你是 AutoGameTest 的「Agent 效能調整器」與「遊戲理解整理器」。請根據一次已完成的 Agent 執行結果與效能診斷，產出**最小、保守、可回滾**的知識調整建議，目標是讓同一遊戲下次判斷更快、更少重複分析，並逐步建立對遊戲流程與機制的完整理解。
 
 # 執行方式
 - 這個 autotune 任務可能在 read-only sandbox 中執行，這是正常狀態，不代表失敗。
 - 不要嘗試直接修改檔案、不要呼叫 shell 寫檔、不要使用 apply_patch。
 - 你只需要輸出下方指定的 `AUTOGAMETEST_*` 結構化區塊；Python runner 會負責真正落檔與合併。
-- 若環境顯示 read-only，仍請照常輸出可被 runner 套用的 `AUTOGAMETEST_SKILL_LESSONS` / `AUTOGAMETEST_VISUAL_MEMORY` / `AUTOGAMETEST_AUTOTUNE_SUMMARY`。
+- 若環境顯示 read-only，仍請照常輸出可被 runner 套用的 `AUTOGAMETEST_GAME_UNDERSTANDING` / `AUTOGAMETEST_SKILL_LESSONS` / `AUTOGAMETEST_VISUAL_MEMORY` / `AUTOGAMETEST_AUTOTUNE_SUMMARY`。
 
 # 絕對邊界
 - 不要操作遊戲、不跑 adb、不截圖、不登入、不購買、不抽卡、不進 PVP。
@@ -315,6 +399,7 @@ def build_autotune_prompt(tune_job: dict, source_job: dict) -> str:
 
 # 建議調整方向
 - 這個 autotune 是跨遊戲的持續優化迴圈：每次 Agent 跑完，都應盡量把「下次可少問 AI」的穩定知識沉澱下來。
+- 若 source job 是自主探索或長時間體驗，除了效能優化，也要整理「這遊戲怎麼玩」：主線階段、主要 UI、核心機制、玩家卡點、完成判定、風險入口。這些輸出到 `AUTOGAMETEST_GAME_UNDERSTANDING`，不要只寫成零碎 lesson。
 - 優先整理成三種可重用知識：
   1. 畫面狀態：這張圖代表哪個 UI 狀態、如何辨識、是否安全。
   2. 下一步動作：若畫面安全且任務仍需推進，下一個穩定動作是什麼。
@@ -349,6 +434,12 @@ agent_name: {agent.get('name', '')}
 # performance 摘要
 ```json
 {_clip(performance, 9000)}
+```
+
+# 自主探索/逐圖全流程摘要
+這份摘要比原始 result 更重要：它保留每一輪的畫面觀察、動作、學到的規則與下一狀態，請用它整理遊戲理解。
+```json
+{_clip(turn_flow, 18000)}
 ```
 
 # fast_decision 摘要
@@ -386,6 +477,35 @@ agent_name: {agent.get('name', '')}
 ```
 
 請只輸出必要的最小結構化調整。
+如果本次執行足以補強對遊戲的完整理解，請輸出：
+AUTOGAMETEST_GAME_UNDERSTANDING:
+```json
+{{
+  "overview": "用 2-5 句整理目前已知的遊戲玩法、核心循環、玩家目標。",
+  "mainline_flow": [
+    "可重複的主線/新手流程，例如：標題 -> 進入遊戲 -> 任務卡 -> 商品/布置/貨架 -> 領獎。"
+  ],
+  "ui_map": [
+    {{"name": "主店鋪", "detail": "重要入口、任務卡、貨幣、手機/便利机、商品管理、布置等位置與用途。"}}
+  ],
+  "mechanics": [
+    "已理解的遊戲機制，例如貨架容量、商品上架、進貨、任務獎勵、教學對話。"
+  ],
+  "safe_strategies": [
+    "下次遇到同類畫面時可採用的安全策略，需可重用。"
+  ],
+  "risks": [
+    "登入、付費、抽卡、回收庫存、消耗鑽石/付費幣等停止或深判條件。"
+  ],
+  "frictions": [
+    "玩家或 agent 容易卡住的地方，以及保守處理方式。"
+  ],
+  "completion_signals": [
+    "哪些文字/UI 代表任務階段完成，避免重做。"
+  ]
+}}
+```
+
 如果有可寫入 Skill「經驗教訓」段的可重用規則，請輸出：
 AUTOGAMETEST_SKILL_LESSONS:
 ```json
@@ -463,6 +583,17 @@ def run_autotune_job(job_id: str, engine: str = "codex",
     visual_fast_rules_merge = None
     skill_lessons_update = None
     autotune_summary = extract_autotune_summary(result.get("output", ""))
+    game_understanding = extract_game_understanding(result.get("output", ""))
+    game_understanding_update = None
+    if game_id and game_understanding:
+        body = format_game_understanding(game_understanding)
+        if body:
+            game_understanding_update = store.upsert_skill_section(
+                game_id,
+                "遊戲理解",
+                body,
+                source=f"autotune:{source_job_id or job_id}",
+            )
     learned_visuals = visual_memory.extract_memory_block(result.get("output", ""))
     if game_id and learned_visuals:
         visual_memory_merge = visual_memory.merge_entries(
@@ -501,7 +632,10 @@ def run_autotune_job(job_id: str, engine: str = "codex",
             f"追加 {skill_lessons_update.get('appended', 0)}、"
             f"略過 {skill_lessons_update.get('skipped', 0)}。"
         )
-    if visual_memory_merge or skill_lessons_update:
+    if game_understanding_update:
+        updated_text = "已更新" if game_understanding_update.get("updated") else "未更新"
+        summary += f"\n\nSkill 遊戲理解：{updated_text}。"
+    if visual_memory_merge or skill_lessons_update or game_understanding_update:
         summary += "\n落檔由 run_autotune.py 主流程完成，不依賴子 Codex 的寫檔權限。"
     if result.get("output"):
         summary += "\n\n" + result["output"][:2500]
@@ -514,6 +648,7 @@ def run_autotune_job(job_id: str, engine: str = "codex",
         after_status=after,
         elapsed_seconds=elapsed,
         autotune_summary=autotune_summary,
+        game_understanding=game_understanding_update,
         skill_lessons=skill_lessons_update,
         visual_memory=visual_memory_merge,
         fast_rules_from_visual_memory=visual_fast_rules_merge,
@@ -525,6 +660,7 @@ def run_autotune_job(job_id: str, engine: str = "codex",
             source_job_id,
             autotune_job_id=job_id,
             autotune_status="done" if ok else "error",
+            autotune_game_understanding=game_understanding_update,
             autotune_skill_lessons=skill_lessons_update,
             autotune_visual_memory=visual_memory_merge,
             autotune_fast_rules_from_visual_memory=visual_fast_rules_merge,
@@ -534,6 +670,7 @@ def run_autotune_job(job_id: str, engine: str = "codex",
         "before_status": before,
         "after_status": after,
         "autotune_summary": autotune_summary,
+        "game_understanding": game_understanding_update,
         "skill_lessons": skill_lessons_update,
         "visual_memory": visual_memory_merge,
         "fast_rules_from_visual_memory": visual_fast_rules_merge,
