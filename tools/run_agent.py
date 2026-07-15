@@ -1177,7 +1177,8 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
                 consecutive_ai_errors += 1
                 error_reason = (
                     f"第 {turn} 輪 Codex 判斷失敗（rc/輸出不可解析），"
-                    f"未執行操作；連續失敗 {consecutive_ai_errors}/3。"
+                    f"未執行操作；連續失敗 {consecutive_ai_errors} 次，"
+                    "自主探索會在時間限制內繼續嘗試。"
                 )
                 turns.append({
                     "turn": turn,
@@ -1189,15 +1190,35 @@ def run_fast_visual_mode(game: dict, task: str, job_id: str | None,
                 })
                 outputs.append(
                     f"Turn {turn}: ai_error - {error_reason}\n{screenshot_path}".strip())
-                if consecutive_ai_errors < 3 and time.perf_counter() < deadline - 10:
+                if time.perf_counter() < deadline - 10:
+                    retry_wait = min(10, 2 + consecutive_ai_errors)
                     state_summary = (
                         f"上一輪在 {screenshot_path} Codex 判斷失敗，沒有執行操作；"
-                        "請用最短 JSON 回覆，若是 loading 或不確定畫面就 wait。"
+                        f"目前已連續失敗 {consecutive_ai_errors} 次。"
+                        "請用最短 JSON 回覆，若是 loading 或不確定畫面就 wait；"
+                        "若畫面停在明確安全教學高亮，優先點擊高亮目標。"
                     )
-                    time.sleep(2)
+                    time.sleep(retry_wait)
                     turn += 1
                     continue
-                reason = error_reason
+                turns.append({
+                    "turn": turn,
+                    "status": "timeout",
+                    "screenshot": screenshot_path,
+                    "elapsed_seconds": elapsed,
+                    "reason": timeout_limit_reason,
+                })
+                outputs.append(
+                    f"Turn {turn}: timeout - {timeout_limit_reason}\n{screenshot_path}".strip())
+                return {
+                    "engine_used": engine_used,
+                    "ok": True,
+                    "output": "\n\n".join(outputs),
+                    "attempts": attempts,
+                    "reason": timeout_limit_reason,
+                    "visual_turns": turns,
+                    "artifact_dir": artifact_dir,
+                }
             turns.append({
                 "turn": turn,
                 "status": "error",
